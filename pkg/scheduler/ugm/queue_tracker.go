@@ -34,7 +34,11 @@ type QueueTracker struct {
 	queueName           string
 	resourceUsage       *resources.Resource
 	runningApplications map[string]bool
-	childQueueTrackers  map[string]*QueueTracker
+
+	maxResourceUsage *resources.Resource
+	maxRunningApps   uint64
+
+	childQueueTrackers map[string]*QueueTracker
 }
 
 func newRootQueueTracker() *QueueTracker {
@@ -150,4 +154,52 @@ func (qt *QueueTracker) getResourceUsageDAOInfo(parentQueuePath string) *dao.Res
 
 func (qt *QueueTracker) getRunningApplications() map[string]bool {
 	return qt.runningApplications
+}
+
+func (qt *QueueTracker) setMaxApplications(maxApps uint64, queuePath string) {
+	if queuePath == "" {
+		qt.maxRunningApps = maxApps
+		return
+	}
+	idx := strings.Index(queuePath, configs.DOT)
+	childQueuePath := ""
+	if idx != -1 {
+		childQueuePath = queuePath[idx+1:]
+	}
+	childIndex := strings.Index(childQueuePath, configs.DOT)
+	immediateChildQueueName := childQueuePath
+	if childIndex != -1 {
+		immediateChildQueueName = childQueuePath[:childIndex]
+	}
+
+	if childQueuePath != "" {
+		if qt.childQueueTrackers[immediateChildQueueName] == nil {
+			qt.childQueueTrackers[immediateChildQueueName] = newQueueTracker(immediateChildQueueName)
+		}
+		qt.childQueueTrackers[immediateChildQueueName].setMaxApplications(maxApps, childQueuePath)
+	}
+}
+
+func (qt *QueueTracker) setMaxResources(maxResource *resources.Resource, queuePath string) {
+	if queuePath == "" {
+		qt.maxResourceUsage = maxResource
+		return
+	}
+	idx := strings.Index(queuePath, configs.DOT)
+	childQueuePath := ""
+	if idx != -1 {
+		childQueuePath = queuePath[idx+1:]
+	}
+	childIndex := strings.Index(childQueuePath, configs.DOT)
+	immediateChildQueueName := childQueuePath
+	if childIndex != -1 {
+		immediateChildQueueName = childQueuePath[:childIndex]
+	}
+
+	if childQueuePath != "" {
+		if qt.childQueueTrackers[immediateChildQueueName] == nil {
+			qt.childQueueTrackers[immediateChildQueueName] = newQueueTracker(immediateChildQueueName)
+		}
+		qt.childQueueTrackers[immediateChildQueueName].setMaxResources(maxResource, childQueuePath)
+	}
 }
