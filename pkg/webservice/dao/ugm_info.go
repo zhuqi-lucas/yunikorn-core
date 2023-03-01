@@ -33,8 +33,10 @@ type GroupResourceUsageDAOInfo struct {
 }
 
 type ResourceUsageDAOInfo struct {
-	QueuePath           string                  `json:"queuePath"`
-	ResourceUsage       *resources.Resource     `json:"resourceUsage"`
-	RunningApplications []string                `json:"runningApplications"`
-	Children            []*ResourceUsageDAOInfo `json:"children"`
+	QueuePath              string                  `json:"queuePath"`
+	ResourceUsage          *resources.Resource     `json:"resourceUsage"`
+	MaxResourceUsage       *resources.Resource     `json:"maxResourceUsage"`
+	RunningApplications    []string                `json:"runningApplications"`
+	MaxRunningApplications uint64                  `json:"maxRunningApplications"`
+	Children               []*ResourceUsageDAOInfo `json:"children"`
 }

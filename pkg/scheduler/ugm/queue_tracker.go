@@ -139,8 +139,10 @@ func (qt *QueueTracker) getResourceUsageDAOInfo(parentQueuePath string) *dao.Res
 		fullQueuePath = qt.queueName
 	}
 	usage := &dao.ResourceUsageDAOInfo{
-		QueuePath:     fullQueuePath,
-		ResourceUsage: qt.resourceUsage.Clone(),
+		QueuePath:              fullQueuePath,
+		ResourceUsage:          qt.resourceUsage.Clone(),
+		MaxResourceUsage:       qt.maxResourceUsage.Clone(),
+		MaxRunningApplications: qt.maxRunningApps,
 	}
 	for app := range qt.runningApplications {
 		usage.RunningApplications = append(usage.RunningApplications, app)
@@ -157,10 +159,6 @@ func (qt *QueueTracker) getRunningApplications() map[string]bool {
 }
 
 func (qt *QueueTracker) setMaxApplications(maxApps uint64, queuePath string) {
-	if queuePath == "" {
-		qt.maxRunningApps = maxApps
-		return
-	}
 	idx := strings.Index(queuePath, configs.DOT)
 	childQueuePath := ""
 	if idx != -1 {
@@ -177,14 +175,12 @@ func (qt *QueueTracker) setMaxApplications(maxApps uint64, queuePath string) {
 			qt.childQueueTrackers[immediateChildQueueName] = newQueueTracker(immediateChildQueueName)
 		}
 		qt.childQueueTrackers[immediateChildQueueName].setMaxApplications(maxApps, childQueuePath)
+	} else {
+		qt.maxRunningApps = maxApps
 	}
 }
 
 func (qt *QueueTracker) setMaxResources(maxResource *resources.Resource, queuePath string) {
-	if queuePath == "" {
-		qt.maxResourceUsage = maxResource
-		return
-	}
 	idx := strings.Index(queuePath, configs.DOT)
 	childQueuePath := ""
 	if idx != -1 {
@@ -195,11 +191,12 @@ func (qt *QueueTracker) setMaxResources(maxResource *resources.Resource, queuePa
 	if childIndex != -1 {
 		immediateChildQueueName = childQueuePath[:childIndex]
 	}
-
 	if childQueuePath != "" {
 		if qt.childQueueTrackers[immediateChildQueueName] == nil {
 			qt.childQueueTrackers[immediateChildQueueName] = newQueueTracker(immediateChildQueueName)
 		}
 		qt.childQueueTrackers[immediateChildQueueName].setMaxResources(maxResource, childQueuePath)
+	} else {
+		qt.maxResourceUsage = maxResource.Clone()
 	}
 }
