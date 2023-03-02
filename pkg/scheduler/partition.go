@@ -21,6 +21,7 @@ package scheduler
 import (
 	"context"
 	"fmt"
+	"github.com/apache/yunikorn-core/pkg/scheduler/ugm"
 	"math"
 	"strconv"
 	"strings"
@@ -236,6 +237,33 @@ func (pc *PartitionContext) updateQueues(config []configs.QueueConfig, parent *o
 	for childName, childQueue := range parent.GetCopyOfChildren() {
 		if !visited[childName] {
 			childQueue.MarkQueueForRemoval()
+		}
+	}
+	return nil
+}
+
+func (pc *PartitionContext) updateLimitDetails(conf configs.PartitionConfig, parentQueuePath string) error {
+	pc.Lock()
+	defer pc.Unlock()
+	queueConf := conf.Queues[0]
+	// update the rest of the queues recursively
+	return pc.updateLimits(queueConf.Queues, parentQueuePath)
+}
+
+func (pc *PartitionContext) updateLimits(config []configs.QueueConfig, parentQueuePath string) error {
+	parentPath := parentQueuePath + configs.DOT
+	for _, conf := range config {
+		queuePath := parentPath + conf.Name
+		for _, limit := range conf.Limits {
+			for _, user := range limit.Users {
+				ugm.GetUserManager().GetUserTracker(user).SetMaxApplications(limit.MaxApplications, queuePath)
+			}
+			for _, group := range limit.Groups {
+				ugm.GetUserManager().GetGroupTracker(group).SetMaxApplications(limit.MaxApplications, queuePath)
+			}
+		}
+		if err := pc.updateLimits(conf.Queues, queuePath); err != nil {
+			return err
 		}
 	}
 	return nil

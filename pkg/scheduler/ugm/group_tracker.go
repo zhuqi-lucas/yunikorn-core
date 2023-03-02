@@ -79,9 +79,9 @@ func (gt *GroupTracker) GetGroupResourceUsageDAOInfo() *dao.GroupResourceUsageDA
 	return groupResourceUsage
 }
 
-func (ut *GroupTracker) setMaxApplications(maxApps uint64, queuePath string) {
+func (ut *GroupTracker) SetMaxApplications(maxApps uint64, queuePath string) {
 	ut.queueTracker.setMaxApplications(maxApps, queuePath)
 }
-func (ut *GroupTracker) setMaxResources(maxResource *resources.Resource, queuePath string) {
+func (ut *GroupTracker) SetMaxResources(maxResource *resources.Resource, queuePath string) {
 	ut.queueTracker.setMaxResources(maxResource, queuePath)
 }

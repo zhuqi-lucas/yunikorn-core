@@ -30,6 +30,14 @@ import (
 	"github.com/apache/yunikorn-core/pkg/webservice/dao"
 )
 
+type trackingType int
+
+const (
+	none trackingType = iota
+	user
+	group
+)
+
 type QueueTracker struct {
 	queueName           string
 	resourceUsage       *resources.Resource
@@ -53,6 +61,7 @@ func newQueueTracker(queueName string) *QueueTracker {
 		resourceUsage:       resources.NewResource(),
 		runningApplications: make(map[string]bool),
 		childQueueTrackers:  make(map[string]*QueueTracker),
+		maxResourceUsage:    resources.NewResource(),
 	}
 	return queueTracker
 }

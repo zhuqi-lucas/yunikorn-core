@@ -98,9 +98,9 @@ func (ut *UserTracker) GetUserResourceUsageDAOInfo() *dao.UserResourceUsageDAOIn
 	return userResourceUsage
 }
 
-func (ut *UserTracker) setMaxApplications(maxApps uint64, queuePath string) {
+func (ut *UserTracker) SetMaxApplications(maxApps uint64, queuePath string) {
 	ut.queueTracker.setMaxApplications(maxApps, queuePath)
 }
-func (ut *UserTracker) setMaxResources(maxResource *resources.Resource, queuePath string) {
+func (ut *UserTracker) SetMaxResources(maxResource *resources.Resource, queuePath string) {
 	ut.queueTracker.setMaxResources(maxResource, queuePath)
 }

@@ -87,6 +87,11 @@ func NewClusterContext(rmID, policyGroup string, config []byte) (*ClusterContext
 	if err != nil {
 		return nil, err
 	}
+
+	err = cc.updateLimitConfig(conf, rmID)
+	if err != nil {
+		return nil, err
+	}
 	// update the global config
 	configs.ConfigContext.Set(policyGroup, conf)
 	return cc, nil
@@ -184,6 +189,12 @@ func (cc *ClusterContext) processRMRegistrationEvent(event *rmevent.RMRegistrati
 		return
 	}
 
+	err = cc.updateLimitConfig(conf, rmID)
+	if err != nil {
+		event.Channel <- &rmevent.Result{Succeeded: false, Reason: err.Error()}
+		return
+	}
+
 	// update global scheduler configs, set the policyGroup for this cluster
 	cc.policyGroup = policyGroup
 	configs.ConfigContext.Set(policyGroup, conf)
@@ -234,6 +245,12 @@ func (cc *ClusterContext) processRMConfigUpdateEvent(event *rmevent.RMConfigUpda
 	}
 	// update scheduler configuration
 	err = cc.updateSchedulerConfig(conf, rmID)
+	if err != nil {
+		event.Channel <- &rmevent.Result{Succeeded: false, Reason: err.Error()}
+		return
+	}
+	// update limit configuration
+	err = cc.updateLimitConfig(conf, rmID)
 	if err != nil {
 		event.Channel <- &rmevent.Result{Succeeded: false, Reason: err.Error()}
 		return
@@ -408,6 +425,32 @@ func (cc *ClusterContext) updateSchedulerConfig(conf *configs.SchedulerConfig, r
 		}
 	}
 
+	return nil
+}
+
+func (cc *ClusterContext) updateLimitConfig(conf *configs.SchedulerConfig, rmID string) error {
+	var err error
+	// walk over the partitions in the config: update existing ones
+	for _, p := range conf.Partitions {
+		partitionName := common.GetNormalizedPartitionName(p.Name, rmID)
+		p.Name = partitionName
+		part, ok := cc.partitions[p.Name]
+		if ok {
+			// make sure the new info passes all checks
+			_, err = newPartitionContext(p, rmID, nil)
+			if err != nil {
+				return err
+			}
+			// checks passed perform the real update
+			log.Logger().Info("updating partitions limit config", zap.String("partitionName", partitionName))
+			err = part.updateLimitDetails(p, "root")
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	// get the removed partitions, mark them as deleted
 	return nil
 }
 
