@@ -137,6 +137,98 @@ func newLimitedPartition(resLimit map[string]string) (*PartitionContext, error) 
 	return newPartitionContext(conf, rmID, nil)
 }
 
+func newLimitsPartition() (*PartitionContext, error) {
+	conf := configs.PartitionConfig{
+		Name: "test",
+		Queues: []configs.QueueConfig{
+			{
+				Name:      "root",
+				Parent:    true,
+				SubmitACL: "*",
+				Queues: []configs.QueueConfig{
+					{
+						Name:   "limit1",
+						Parent: false,
+						Queues: nil,
+						Resources: configs.Resources{
+							Max: map[string]string{
+								"memory": "100",
+								"vcores": "100",
+							},
+						},
+						Limits: []configs.Limit{
+							{
+								Limit: "queue limit1",
+								Users: []string{
+									"user1",
+									"user2",
+								},
+								Groups: []string{
+									"group1",
+								},
+								MaxResources: map[string]string{
+									"memory": "10",
+									"vcores": "10",
+								},
+								MaxApplications: 10,
+							},
+							{
+								Limit: "queue limit2",
+								Users: []string{
+									"user5",
+								},
+								Groups: []string{
+									"group3",
+									"group4",
+								},
+								MaxResources: map[string]string{
+									"memory": "10",
+									"vcores": "10",
+								},
+								MaxApplications: 10,
+							},
+						},
+					},
+					{
+						Name:   "limit2",
+						Parent: false,
+						Queues: nil,
+						Resources: configs.Resources{
+							Max: map[string]string{
+								"memory": "200",
+								"vcores": "200",
+							},
+						},
+						Limits: []configs.Limit{
+							{
+								Limit: "queue limit3",
+								Users: []string{
+									"user1",
+									"user2",
+								},
+								Groups: []string{
+									"group1",
+								},
+								MaxResources: map[string]string{
+									"memory": "30",
+									"vcores": "30",
+								},
+								MaxApplications: 50,
+							},
+						},
+					},
+				},
+			},
+		},
+		PlacementRules: nil,
+		Limits:         nil,
+		Preemption:     configs.PartitionPreemptionConfig{},
+		NodeSortPolicy: configs.NodeSortingPolicy{},
+	}
+
+	return newPartitionContext(conf, rmID, nil)
+}
+
 func newPlacementPartition() (*PartitionContext, error) {
 	conf := configs.PartitionConfig{
 		Name: "test",

@@ -33,11 +33,11 @@ func internalGetResource(usage *dao.ResourceUsageDAOInfo, resources map[string]*
 	return resources
 }
 
-func internalGetMaxResource(usage *dao.ResourceUsageDAOInfo, resources map[string]*resources.Resource) map[string]*resources.Resource {
+func InternalGetMaxResource(usage *dao.ResourceUsageDAOInfo, resources map[string]*resources.Resource) map[string]*resources.Resource {
 	resources[usage.QueuePath] = usage.MaxResourceUsage
 	if len(usage.Children) > 0 {
 		for _, resourceUsage := range usage.Children {
-			internalGetMaxResource(resourceUsage, resources)
+			InternalGetMaxResource(resourceUsage, resources)
 		}
 	}
 	return resources

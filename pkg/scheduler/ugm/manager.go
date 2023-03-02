@@ -56,6 +56,28 @@ func GetUserManager() *Manager {
 	return m
 }
 
+func (m *Manager) InitForUserLimitTracker(user string) *UserTracker {
+	queueTracker := newRootQueueTracker()
+	userTracker := &UserTracker{
+		userName:         user,
+		appGroupTrackers: make(map[string]*GroupTracker),
+		queueTracker:     queueTracker,
+	}
+	m.userTrackers[user] = userTracker
+	return userTracker
+}
+
+func (m *Manager) InitForGroupLimitTracker(group string) *GroupTracker {
+	queueTracker := newRootQueueTracker()
+	groupTracker := &GroupTracker{
+		groupName:    group,
+		applications: make(map[string]bool),
+		queueTracker: queueTracker,
+	}
+	m.groupTrackers[group] = groupTracker
+	return groupTracker
+}
+
 // IncreaseTrackedResource Increase the resource usage for the given user group and queue path combination.
 // As and when every allocation or asks requests fulfilled on application, corresponding user and group
 // resource usage would be increased against specific application.

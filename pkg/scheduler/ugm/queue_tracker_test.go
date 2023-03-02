@@ -159,7 +159,7 @@ func getQTResource(qt *QueueTracker) map[string]*resources.Resource {
 func getQTMaxResource(qt *QueueTracker) map[string]*resources.Resource {
 	resources := make(map[string]*resources.Resource)
 	usage := qt.getResourceUsageDAOInfo("")
-	return internalGetMaxResource(usage, resources)
+	return InternalGetMaxResource(usage, resources)
 }
 
 func TestQTSetMaxApps(t *testing.T) {

@@ -20,6 +20,7 @@ package scheduler
 
 import (
 	"fmt"
+	"github.com/apache/yunikorn-core/pkg/webservice/dao"
 	"strconv"
 	"strings"
 	"testing"
@@ -931,6 +932,133 @@ func TestUpdateQueues(t *testing.T) {
 	leaf := partition.GetQueue("root.parent.leaf")
 	if leaf == nil {
 		t.Fatal("leaf queue should have been created")
+	}
+}
+
+func InternalGetMaxResource(usage *dao.ResourceUsageDAOInfo, resources map[string]*resources.Resource) map[string]*resources.Resource {
+	resources[usage.QueuePath] = usage.MaxResourceUsage
+	if len(usage.Children) > 0 {
+		for _, resourceUsage := range usage.Children {
+			InternalGetMaxResource(resourceUsage, resources)
+		}
+	}
+	return resources
+}
+
+func InternalGetMaxRunningApplications(usage *dao.ResourceUsageDAOInfo, resources map[string]uint64) map[string]uint64 {
+	resources[usage.QueuePath] = usage.MaxRunningApplications
+	if len(usage.Children) > 0 {
+		for _, resourceUsage := range usage.Children {
+			InternalGetMaxRunningApplications(resourceUsage, resources)
+		}
+	}
+	return resources
+}
+
+func TestUpdateLimits(t *testing.T) {
+	conf := []configs.QueueConfig{
+		{
+			Name:      "parent",
+			Parent:    true,
+			SubmitACL: "*",
+			Queues: []configs.QueueConfig{
+				{
+					Name:   "limit1",
+					Parent: false,
+					Queues: nil,
+					Resources: configs.Resources{
+						Max: map[string]string{
+							"memory": "100",
+							"vcores": "100",
+						},
+					},
+					Limits: []configs.Limit{
+						{
+							Limit: "queue limit1",
+							Users: []string{
+								"user1",
+								"user2",
+							},
+							Groups: []string{
+								"group1",
+							},
+							MaxResources: map[string]string{
+								"memory": "10",
+								"vcores": "10",
+							},
+							MaxApplications: 10,
+						},
+						{
+							Limit: "queue limit2",
+							Users: []string{
+								"user5",
+							},
+							Groups: []string{
+								"group3",
+								"group4",
+							},
+							MaxResources: map[string]string{
+								"memory": "10",
+								"vcores": "10",
+							},
+							MaxApplications: 10,
+						},
+					},
+				},
+				{
+					Name:   "limit2",
+					Parent: false,
+					Queues: nil,
+					Resources: configs.Resources{
+						Max: map[string]string{
+							"memory": "200",
+							"vcores": "200",
+						},
+					},
+					Limits: []configs.Limit{
+						{
+							Limit: "queue limit3",
+							Users: []string{
+								"user1",
+								"user2",
+							},
+							Groups: []string{
+								"group1",
+							},
+							MaxResources: map[string]string{
+								"memory": "30",
+								"vcores": "30",
+							},
+							MaxApplications: 50,
+						},
+					},
+				},
+			},
+			Limits: nil,
+		},
+	}
+
+	partition, err := newBasePartition()
+	assert.NilError(t, err, "partition create failed")
+	// There is a queue setup as the config must be valid when we run
+	root := partition.GetQueue("root")
+	if root == nil {
+		t.Error("root queue not found in partition")
+	}
+	err = partition.updateLimits(conf, "root")
+	assert.NilError(t, err, "queue update from config failed")
+
+	println(len(ugm.GetUserManager().GetUsersResources()))
+	userTrackers := ugm.GetUserManager().GetUsersResources()
+	for _, userTracker := range userTrackers {
+		resources := make(map[string]*resources.Resource)
+		InternalGetMaxResource(userTracker.GetUserResourceUsageDAOInfo().Queues, resources)
+		maxRunning := make(map[string]uint64)
+		InternalGetMaxRunningApplications(userTracker.GetUserResourceUsageDAOInfo().Queues, maxRunning)
+		println(resources["root.parent.limit1"].String())
+		println(resources["root.parent.limit2"].String())
+		println(maxRunning["root.parent.limit1"])
+		println(maxRunning["root.parent.limit2"])
 	}
 }
 
