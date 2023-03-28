@@ -656,7 +656,7 @@ func TestRemovePlaceholderAllocationWithNoRealAllocation(t *testing.T) {
 	ask.placeholder = true
 	allocInfo := NewAllocation("uuid-1", nodeID1, ask)
 	app.AddAllocation(allocInfo)
-	err := app.HandleApplicationEvent(RunApplication)
+	err := app.handleApplicationEventWithLocking(RunApplication)
 	assert.NilError(t, err, "no error expected new to accepted")
 
 	app.RemoveAllocation("uuid-1", si.TerminationType_UNKNOWN_TERMINATION_TYPE)
@@ -974,9 +974,9 @@ func TestStateTimeOut(t *testing.T) {
 	startingTimeout = time.Microsecond * 100
 	defer func() { startingTimeout = time.Minute * 5 }()
 	app := newApplication(appID1, "default", "root.a")
-	err := app.HandleApplicationEvent(RunApplication)
+	err := app.handleApplicationEventWithLocking(RunApplication)
 	assert.NilError(t, err, "no error expected new to accepted (timeout test)")
-	err = app.HandleApplicationEvent(RunApplication)
+	err = app.handleApplicationEventWithLocking(RunApplication)
 	assert.NilError(t, err, "no error expected accepted to starting (timeout test)")
 	// give it some time to run and progress
 	time.Sleep(time.Millisecond * 100)
@@ -989,16 +989,16 @@ func TestStateTimeOut(t *testing.T) {
 
 	startingTimeout = time.Millisecond * 100
 	app = newApplication(appID1, "default", "root.a")
-	err = app.HandleApplicationEvent(RunApplication)
+	err = app.handleApplicationEventWithLocking(RunApplication)
 	assert.NilError(t, err, "no error expected new to accepted (timeout test2)")
-	err = app.HandleApplicationEvent(RunApplication)
+	err = app.handleApplicationEventWithLocking(RunApplication)
 	assert.NilError(t, err, "no error expected accepted to starting (timeout test2)")
 	// give it some time to run and progress
 	time.Sleep(time.Microsecond * 100)
 	if !app.IsStarting() || app.stateTimer == nil {
 		t.Fatalf("Starting state and timer should not have timed out yet, state: %s", app.stateMachine.Current())
 	}
-	err = app.HandleApplicationEvent(RunApplication)
+	err = app.handleApplicationEventWithLocking(RunApplication)
 	assert.NilError(t, err, "no error expected starting to run (timeout test2)")
 	// give it some time to run and progress
 	time.Sleep(time.Microsecond * 100)
@@ -1008,9 +1008,9 @@ func TestStateTimeOut(t *testing.T) {
 
 	startingTimeout = time.Minute * 5
 	app = newApplicationWithTags(appID2, "default", "root.a", map[string]string{siCommon.AppTagStateAwareDisable: "true"})
-	err = app.HandleApplicationEvent(RunApplication)
+	err = app.handleApplicationEventWithLocking(RunApplication)
 	assert.NilError(t, err, "no error expected new to accepted (timeout test)")
-	err = app.HandleApplicationEvent(RunApplication)
+	err = app.handleApplicationEventWithLocking(RunApplication)
 	assert.NilError(t, err, "no error expected accepted to starting (timeout test)")
 	// give it some time to run and progress
 	time.Sleep(time.Millisecond * 100)
@@ -1039,9 +1039,9 @@ func TestCompleted(t *testing.T) {
 		"test": {},
 	}
 	app.sortedRequests = append(app.sortedRequests, &AllocationAsk{})
-	err := app.HandleApplicationEvent(RunApplication)
+	err := app.handleApplicationEventWithLocking(RunApplication)
 	assert.NilError(t, err, "no error expected new to accepted (completed test)")
-	err = app.HandleApplicationEvent(CompleteApplication)
+	err = app.handleApplicationEventWithLocking(CompleteApplication)
 	assert.NilError(t, err, "no error expected accepted to completing (completed test)")
 	assert.Assert(t, app.IsCompleting(), "App should be waiting")
 	// give it some time to run and progress
@@ -1068,7 +1068,7 @@ func TestRejected(t *testing.T) {
 	}()
 	app := newApplication(appID1, "default", "root.a")
 	rejectedMessage := fmt.Sprintf("Failed to place application %s: application rejected: no placement rule matched", app.ApplicationID)
-	err := app.HandleApplicationEventWithInfo(RejectApplication, rejectedMessage)
+	err := app.handleApplicationEventWithInfoLocking(RejectApplication, rejectedMessage)
 	assert.NilError(t, err, "no error expected new to rejected")
 
 	err = common.WaitFor(1*time.Millisecond, time.Millisecond*200, app.IsRejected)
@@ -1106,12 +1106,12 @@ func TestOnStatusChangeCalled(t *testing.T) {
 	app, testHandler := newApplicationWithHandler(appID1, "default", "root.a")
 	assert.Equal(t, New.String(), app.CurrentState(), "new app not in New state")
 
-	err := app.HandleApplicationEvent(RunApplication)
+	err := app.handleApplicationEventWithLocking(RunApplication)
 	assert.NilError(t, err, "error returned which was not expected")
 	assert.Assert(t, testHandler.IsHandled(), "handler did not get called as expected")
 
 	// accepted to rejected: error expected
-	err = app.HandleApplicationEvent(RejectApplication)
+	err = app.handleApplicationEventWithLocking(RejectApplication)
 	assert.Assert(t, err != nil, "error expected and not seen")
 	assert.Equal(t, app.CurrentState(), Accepted.String(), "application state has been changed unexpectedly")
 	assert.Assert(t, !testHandler.IsHandled(), "unexpected event send to the RM")
@@ -1609,40 +1609,181 @@ func TestCanReplace(t *testing.T) {
 	}
 }
 
-func TestAllocationPriorityTracking(t *testing.T) {
-	setupUGM()
-	app := newApplication(appID1, "default", "root.a")
+func TestTryAllocateNoRequests(t *testing.T) {
+	node := newNode("node1", map[string]resources.Quantity{"first": 5})
+	nodes := []*Node{node}
+	nodeMap := map[string]*Node{"node1": node}
+	iterator := func() NodeIterator { return NewDefaultNodeIterator(nodes) }
+	getNode := func(nodeID string) *Node {
+		return nodeMap[nodeID]
+	}
 
-	resMap := map[string]string{"memory": "100", "vcores": "10"}
-	res, err := resources.NewResourceFromConf(resMap)
-	assert.NilError(t, err, "failed to create resource with error")
+	app := newApplication(appID1, "default", "root.unknown")
+	preemptionAttemptsRemaining := 0
+	alloc := app.tryAllocate(node.GetAvailableResource(), 30*time.Second, &preemptionAttemptsRemaining, iterator, iterator, getNode)
+	assert.Check(t, alloc == nil, "unexpected alloc")
+}
 
-	alloc1 := newAllocation(appID1, "uuid-1", nodeID1, "root.a", res)
-	alloc1.priority = 10
-	alloc2 := newAllocation(appID1, "uuid-2", nodeID1, "root.a", res)
-	alloc2.priority = 1
-	alloc3 := newAllocation(appID1, "uuid-3", nodeID1, "root.a", res)
-	alloc3.priority = 5
-	alloc4 := newAllocation(appID1, "uuid-4", nodeID1, "root.a", res)
-	alloc4.priority = 1
+func TestTryAllocateFit(t *testing.T) {
+	node := newNode("node1", map[string]resources.Quantity{"first": 5})
+	nodes := []*Node{node}
+	nodeMap := map[string]*Node{"node1": node}
+	iterator := func() NodeIterator { return NewDefaultNodeIterator(nodes) }
+	getNode := func(nodeID string) *Node {
+		return nodeMap[nodeID]
+	}
 
-	app.AddAllocation(alloc1)
-	assert.Equal(t, int32(10), app.GetAllocationMinPriority())
-	app.AddAllocation(alloc2)
-	assert.Equal(t, int32(1), app.GetAllocationMinPriority())
-	app.AddAllocation(alloc3)
-	assert.Equal(t, int32(1), app.GetAllocationMinPriority())
-	app.AddAllocation(alloc4)
-	assert.Equal(t, int32(1), app.GetAllocationMinPriority())
+	rootQ, err := createRootQueue(map[string]string{"first": "5"})
+	assert.NilError(t, err)
+	childQ, err := createManagedQueue(rootQ, "child", false, map[string]string{"first": "5"})
+	assert.NilError(t, err)
 
-	app.RemoveAllocation("uuid-3", si.TerminationType_STOPPED_BY_RM)
-	assert.Equal(t, int32(1), app.GetAllocationMinPriority())
-	app.RemoveAllocation("uuid-2", si.TerminationType_STOPPED_BY_RM)
-	assert.Equal(t, int32(1), app.GetAllocationMinPriority())
-	app.RemoveAllocation("uuid-4", si.TerminationType_STOPPED_BY_RM)
-	assert.Equal(t, int32(10), app.GetAllocationMinPriority())
-	app.RemoveAllocation("uuid-1", si.TerminationType_STOPPED_BY_RM)
-	assert.Equal(t, configs.MaxPriority, app.GetAllocationMinPriority())
+	app := newApplication(appID1, "default", "root.child")
+	app.SetQueue(childQ)
+	childQ.applications[appID1] = app
+	ask := newAllocationAsk("alloc1", appID1, resources.NewResourceFromMap(map[string]resources.Quantity{"first": 5}))
+	err = app.AddAllocationAsk(ask)
+	assert.NilError(t, err)
+
+	preemptionAttemptsRemaining := 0
+	alloc := app.tryAllocate(node.GetAvailableResource(), 30*time.Second, &preemptionAttemptsRemaining, iterator, iterator, getNode)
+	assert.Assert(t, alloc != nil, "alloc expected")
+	assert.Equal(t, "node1", alloc.GetNodeID(), "wrong node")
+}
+
+func TestTryAllocatePreemptQueue(t *testing.T) {
+	node := newNode("node1", map[string]resources.Quantity{"first": 20})
+	nodes := []*Node{node}
+	nodeMap := map[string]*Node{"node1": node}
+	iterator := func() NodeIterator { return NewDefaultNodeIterator(nodes) }
+	getNode := func(nodeID string) *Node {
+		return nodeMap[nodeID]
+	}
+
+	rootQ, err := createRootQueue(map[string]string{"first": "20"})
+	assert.NilError(t, err)
+	parentQ, err := createManagedQueueGuaranteed(rootQ, "parent", true, map[string]string{"first": "20"}, map[string]string{"first": "10"})
+	assert.NilError(t, err)
+	childQ1, err := createManagedQueueGuaranteed(parentQ, "child1", false, nil, map[string]string{"first": "5"})
+	assert.NilError(t, err)
+	childQ2, err := createManagedQueueGuaranteed(parentQ, "child2", false, nil, map[string]string{"first": "5"})
+	assert.NilError(t, err)
+
+	app1 := newApplication(appID1, "default", "root.parent.child1")
+	app1.SetQueue(childQ1)
+	childQ1.applications[appID1] = app1
+	ask1 := newAllocationAsk("alloc1", appID1, resources.NewResourceFromMap(map[string]resources.Quantity{"first": 5}))
+	err = app1.AddAllocationAsk(ask1)
+	assert.NilError(t, err)
+	ask2 := newAllocationAsk("alloc2", appID1, resources.NewResourceFromMap(map[string]resources.Quantity{"first": 5}))
+	err = app1.AddAllocationAsk(ask2)
+	assert.NilError(t, err)
+
+	app2 := newApplication(appID2, "default", "root.parent.child2")
+	app2.SetQueue(childQ2)
+	childQ2.applications[appID2] = app2
+	ask3 := newAllocationAsk("alloc3", appID2, resources.NewResourceFromMap(map[string]resources.Quantity{"first": 5}))
+	ask3.allowPreemptOther = true
+	err = app2.AddAllocationAsk(ask3)
+	assert.NilError(t, err)
+
+	preemptionAttemptsRemaining := 10
+
+	alloc1 := app1.tryAllocate(resources.NewResourceFromMap(map[string]resources.Quantity{"first": 10}), 30*time.Second, &preemptionAttemptsRemaining, iterator, iterator, getNode)
+	assert.Assert(t, alloc1 != nil, "alloc1 expected")
+	alloc2 := app1.tryAllocate(resources.NewResourceFromMap(map[string]resources.Quantity{"first": 5}), 30*time.Second, &preemptionAttemptsRemaining, iterator, iterator, getNode)
+	assert.Assert(t, alloc2 != nil, "alloc2 expected")
+
+	// on first attempt, not enough time has passed
+	alloc3 := app2.tryAllocate(resources.NewResourceFromMap(map[string]resources.Quantity{"first": 0}), 30*time.Second, &preemptionAttemptsRemaining, iterator, iterator, getNode)
+	assert.Assert(t, alloc3 == nil, "alloc3 not expected")
+	assert.Assert(t, !alloc2.IsPreempted(), "alloc2 should not have been preempted")
+
+	// pass the time and try again
+	ask3.createTime = ask3.createTime.Add(-30 * time.Second)
+	alloc3 = app2.tryAllocate(resources.NewResourceFromMap(map[string]resources.Quantity{"first": 0}), 30*time.Second, &preemptionAttemptsRemaining, iterator, iterator, getNode)
+	assert.Assert(t, alloc3 == nil, "alloc3 not expected")
+	assert.Assert(t, alloc2.IsPreempted(), "alloc2 should have been preempted")
+}
+
+func TestTryAllocatePreemptNode(t *testing.T) {
+	node1 := newNode("node1", map[string]resources.Quantity{"first": 20})
+	node2 := newNode("node2", map[string]resources.Quantity{"first": 20})
+	nodes := []*Node{node1, node2}
+	nodeMap := map[string]*Node{"node1": node1, "node2": node2}
+	iterator := func() NodeIterator { return NewDefaultNodeIterator(nodes) }
+	getNode := func(nodeID string) *Node {
+		return nodeMap[nodeID]
+	}
+
+	rootQ, err := createRootQueue(map[string]string{"first": "40"})
+	assert.NilError(t, err)
+	parentQ, err := createManagedQueueGuaranteed(rootQ, "parent", true, map[string]string{"first": "20"}, map[string]string{"first": "10"})
+	assert.NilError(t, err)
+	unlimitedQ, err := createManagedQueueGuaranteed(rootQ, "unlimited", false, nil, nil)
+	assert.NilError(t, err)
+	childQ1, err := createManagedQueueGuaranteed(parentQ, "child1", false, nil, map[string]string{"first": "5"})
+	assert.NilError(t, err)
+	childQ2, err := createManagedQueueGuaranteed(parentQ, "child2", false, nil, map[string]string{"first": "5"})
+	assert.NilError(t, err)
+
+	app0 := newApplication(appID0, "default", "root.unlimited")
+	app0.SetQueue(unlimitedQ)
+	unlimitedQ.applications[appID0] = app0
+	ask00 := newAllocationAsk("alloc0-0", appID0, resources.NewResourceFromMap(map[string]resources.Quantity{"first": 11}))
+	err = app0.AddAllocationAsk(ask00)
+	assert.NilError(t, err)
+	ask01 := newAllocationAsk("alloc0-1", appID0, resources.NewResourceFromMap(map[string]resources.Quantity{"first": 11}))
+	err = app0.AddAllocationAsk(ask01)
+	assert.NilError(t, err)
+
+	app1 := newApplication(appID1, "default", "root.parent.child1")
+	app1.SetQueue(childQ1)
+	childQ1.applications[appID1] = app1
+	ask1 := newAllocationAsk("alloc1", appID1, resources.NewResourceFromMap(map[string]resources.Quantity{"first": 5}))
+	err = app1.AddAllocationAsk(ask1)
+	assert.NilError(t, err)
+	ask2 := newAllocationAsk("alloc2", appID1, resources.NewResourceFromMap(map[string]resources.Quantity{"first": 5}))
+	err = app1.AddAllocationAsk(ask2)
+	assert.NilError(t, err)
+
+	app2 := newApplication(appID2, "default", "root.parent.child2")
+	app2.SetQueue(childQ2)
+	childQ2.applications[appID2] = app2
+	ask3 := newAllocationAsk("alloc3", appID2, resources.NewResourceFromMap(map[string]resources.Quantity{"first": 5}))
+	ask3.allowPreemptOther = true
+	err = app2.AddAllocationAsk(ask3)
+	assert.NilError(t, err)
+
+	preemptionAttemptsRemaining := 10
+
+	// consume capacity with 'unlimited' app
+	alloc00 := app0.tryAllocate(resources.NewResourceFromMap(map[string]resources.Quantity{"first": 40}), 30*time.Second, &preemptionAttemptsRemaining, iterator, iterator, getNode)
+	assert.Assert(t, alloc00 != nil, "alloc00 expected")
+	alloc01 := app0.tryAllocate(resources.NewResourceFromMap(map[string]resources.Quantity{"first": 39}), 30*time.Second, &preemptionAttemptsRemaining, iterator, iterator, getNode)
+	assert.Assert(t, alloc01 != nil, "alloc01 expected")
+
+	// consume remainder of space but not quota
+	alloc1 := app1.tryAllocate(resources.NewResourceFromMap(map[string]resources.Quantity{"first": 28}), 30*time.Second, &preemptionAttemptsRemaining, iterator, iterator, getNode)
+	assert.Assert(t, alloc1 != nil, "alloc1 expected")
+	alloc2 := app1.tryAllocate(resources.NewResourceFromMap(map[string]resources.Quantity{"first": 23}), 30*time.Second, &preemptionAttemptsRemaining, iterator, iterator, getNode)
+	assert.Assert(t, alloc2 != nil, "alloc2 expected")
+
+	// on first attempt, should see a reservation since we're after the reservation timeout
+	ask3.createTime = ask3.createTime.Add(-10 * time.Second)
+	alloc3 := app2.tryAllocate(resources.NewResourceFromMap(map[string]resources.Quantity{"first": 18}), 30*time.Second, &preemptionAttemptsRemaining, iterator, iterator, getNode)
+	assert.Assert(t, alloc3 != nil, "alloc3 expected")
+	assert.Equal(t, "node1", alloc3.GetNodeID(), "wrong node assignment")
+	assert.Equal(t, Reserved, alloc3.GetResult(), "expected reservation")
+	assert.Assert(t, !alloc2.IsPreempted(), "alloc2 should not have been preempted")
+	err = node1.Reserve(app2, ask3)
+	assert.NilError(t, err)
+
+	// pass the time and try again
+	ask3.createTime = ask3.createTime.Add(-30 * time.Second)
+	alloc3 = app2.tryAllocate(resources.NewResourceFromMap(map[string]resources.Quantity{"first": 18}), 30*time.Second, &preemptionAttemptsRemaining, iterator, iterator, getNode)
+	assert.Assert(t, alloc3 != nil, "alloc3 expected")
+	assert.Assert(t, alloc1.IsPreempted(), "alloc1 should have been preempted")
 }
 
 func TestMaxAskPriority(t *testing.T) {
@@ -1725,4 +1866,16 @@ func (sa *Application) getPlaceholderTimer() *time.Timer {
 	sa.RLock()
 	defer sa.RUnlock()
 	return sa.placeholderTimer
+}
+
+func (sa *Application) handleApplicationEventWithLocking(event applicationEvent) error {
+	sa.Lock()
+	defer sa.Unlock()
+	return sa.HandleApplicationEvent(event)
+}
+
+func (sa *Application) handleApplicationEventWithInfoLocking(event applicationEvent, info string) error {
+	sa.Lock()
+	defer sa.Unlock()
+	return sa.HandleApplicationEventWithInfo(event, info)
 }

@@ -124,7 +124,6 @@ func TestNewWithPlacement(t *testing.T) {
 			},
 		},
 		Limits:         nil,
-		Preemption:     configs.PartitionPreemptionConfig{},
 		NodeSortPolicy: configs.NodeSortingPolicy{},
 	}
 	partition, err := newPartitionContext(confWith, rmID, nil)
@@ -424,8 +423,322 @@ func TestCalculateNodesResourceUsage(t *testing.T) {
 	assert.Equal(t, usageMap["first"][9], 1)
 }
 
+// test basic placeholder preemption
+// setup:
+// queue quota max size: 16GB / 16cpu
+// nodes: 2 * 8GB / 8 cpu
+// create an application with allocation: 4 GB / 4 cpu
+// create an gang application requesting: 7 * 2GB / 2cpu
+// create a daemon set pod for one of the nodes asking for 2GB / 2 cpu
+//
+// ensure placeholder has been preempted and released resources has been given to the request asked for
+// ensure preempted placeholder has been accounted under timed out in gang app placeholder data
+func TestPlaceholderDataWithPlaceholderPreemption(t *testing.T) {
+	setupUGM()
+	partition, err := newBasePartition()
+	assert.NilError(t, err, "partition create failed")
+
+	// add a new app1
+	app1, _ := newApplicationWithHandler(appID1, "default", defQueue)
+	err = partition.AddApplication(app1)
+	assert.NilError(t, err, "add application to partition should not have failed")
+
+	// add a node with allocation: must have the correct app1 added already
+	resMap := map[string]string{"mem": "2M", "vcore": "2"}
+	res, err := resources.NewResourceFromConf(resMap)
+	assert.NilError(t, err, "Unexpected error when creating resource from map")
+	appRes := res.Clone()
+	phRes := res.Clone()
+	newRes := res.Clone()
+	appRes.MultiplyTo(2)
+	newRes.MultiplyTo(4)
+	phRes.MultiplyTo(7)
+
+	ask := newAllocationAskAll("ask-1", appID1, taskGroup, appRes, 0, 1, false)
+	alloc := objects.NewAllocation(allocID, nodeID1, ask)
+	allocs := []*objects.Allocation{alloc}
+
+	node1 := newNodeMaxResource(nodeID1, newRes)
+	err = partition.AddNode(node1, allocs)
+	assert.NilError(t, err, "add node1 to partition should not have failed")
+	assert.Equal(t, 1, partition.nodes.GetNodeCount(), "node list not correct")
+
+	// get what was allocated
+	allocated := node1.GetAllAllocations()
+	assert.Equal(t, 1, len(allocated), "allocation not added correctly to node1")
+	assert.Assert(t, resources.Equals(node1.GetAllocatedResource(), appRes), "allocation not added correctly to node1")
+
+	node2 := newNodeMaxResource(nodeID2, newRes)
+	err = partition.AddNode(node2, nil)
+	assert.NilError(t, err, "test node add failed unexpected")
+	assert.Equal(t, 2, partition.nodes.GetNodeCount(), "node list not correct")
+	assert.Assert(t, resources.Equals(partition.GetQueue(defQueue).GetAllocatedResource(), appRes), "Queue allocated resource is not correct")
+
+	// add the app1 with 6 placeholder request
+	gangApp := newApplicationTGTagsWithPhTimeout(appID2, "default", defQueue, phRes, nil, 0)
+	err = partition.AddApplication(gangApp)
+	assert.NilError(t, err, "app1-1 should have been added to the partition")
+
+	for i := 1; i <= 6; i++ {
+		// add an ask for a placeholder and allocate
+		ask = newAllocationAskTG(phID+strconv.Itoa(i+1), appID2, taskGroup, res, true)
+		err = gangApp.AddAllocationAsk(ask)
+		assert.NilError(t, err, "failed to add placeholder ask ph-1 to app1")
+		// try to allocate a placeholder via normal allocate
+		ph := partition.tryAllocate()
+		if ph == nil {
+			t.Fatal("expected placeholder to be allocated")
+		}
+	}
+
+	// add an ask for a last placeholder and allocate
+	lastPh := phID + strconv.Itoa(7)
+	ask = newAllocationAskTG(lastPh, appID2, taskGroup, res, true)
+	err = gangApp.AddAllocationAsk(ask)
+	assert.NilError(t, err, "failed to add placeholder ask ph-1 to app1")
+
+	// try to allocate a last placeholder via normal allocate
+	partition.tryAllocate()
+
+	assertPlaceholderData(t, gangApp, 7, 0)
+	partition.removeApplication(appID1)
+
+	alloc = partition.tryAllocate()
+	lastPhUUID := alloc.GetUUID()
+
+	// add a new app1
+	app2, testHandler2 := newApplicationWithHandler(appID3, "default", defQueue)
+	err = partition.AddApplication(app2)
+	assert.NilError(t, err, "add application to partition should not have failed")
+
+	// required node set on ask
+	ask2 := newAllocationAsk(allocID2, appID3, res)
+	ask2.SetRequiredNode(nodeID2)
+	err = app2.AddAllocationAsk(ask2)
+	assert.NilError(t, err, "failed to add ask alloc-2 to app1-1")
+
+	// since node-2 available resource is less than needed, reserve the node
+	alloc = partition.tryAllocate()
+	if alloc != nil {
+		t.Fatal("allocation attempt should not have returned an allocation")
+	}
+	// check if updated (must be after allocate call)
+	assert.Equal(t, 1, len(app2.GetReservations()), "ask should have been reserved")
+	assert.Equal(t, 1, len(app2.GetAskReservations(allocID2)), "ask should have been reserved")
+
+	// try through reserved scheduling cycle this should trigger preemption
+	alloc = partition.tryReservedAllocate()
+	if alloc != nil {
+		t.Fatal("reserved allocation attempt should not have returned an allocation")
+	}
+
+	// check if there is a release event for the expected allocation
+	var found bool
+	for _, event := range testHandler2.GetEvents() {
+		if allocRelease, ok := event.(*rmevent.RMReleaseAllocationEvent); ok {
+			found = allocRelease.ReleasedAllocations[0].AllocationKey == lastPh
+			break
+		}
+	}
+	assert.Assert(t, found, "release allocation event not found in list")
+	// release allocation: do what the context would do after the shim processing
+	release := &si.AllocationRelease{
+		PartitionName:   partition.Name,
+		ApplicationID:   appID2,
+		UUID:            lastPhUUID,
+		TerminationType: si.TerminationType_PREEMPTED_BY_SCHEDULER,
+	}
+	releases, _ := partition.removeAllocation(release)
+	assert.Equal(t, 1, len(releases), "unexpected number of allocations released")
+	assertPlaceholderData(t, gangApp, 7, 1)
+}
+
+// test node removal effect on placeholder data
+// setup:
+// queue quota max size: 16GB / 16cpu
+// nodes: 2 * 8GB / 8 cpu
+// create an application with allocation: 4 GB / 4 cpu
+// create an gang application requesting: 7 * 2GB / 2cpu
+// Remove the node where placeholders are running
+//
+// ensure removed placeholders has been accounted under timed out in gang app placeholder data
+func TestPlaceholderDataWithNodeRemoval(t *testing.T) {
+	setupUGM()
+	partition, err := newBasePartition()
+	assert.NilError(t, err, "partition create failed")
+
+	// add a new app1
+	app1, _ := newApplicationWithHandler(appID1, "default", defQueue)
+	err = partition.AddApplication(app1)
+	assert.NilError(t, err, "add application to partition should not have failed")
+
+	resMap := map[string]string{"mem": "2M", "vcore": "2"}
+	res, err := resources.NewResourceFromConf(resMap)
+	assert.NilError(t, err, "Unexpected error when creating resource from map")
+	appRes := res.Clone()
+	phRes := res.Clone()
+	newRes := res.Clone()
+	appRes.MultiplyTo(2)
+	newRes.MultiplyTo(4)
+	phRes.MultiplyTo(7)
+
+	// add a node with allocation: must have the correct app1 added already
+	ask := newAllocationAskAll("ask-1", appID1, taskGroup, appRes, 0, 1, false)
+	alloc := objects.NewAllocation(allocID, nodeID1, ask)
+	allocs := []*objects.Allocation{alloc}
+
+	node1 := newNodeMaxResource(nodeID1, newRes)
+	err = partition.AddNode(node1, allocs)
+	assert.NilError(t, err, "add node1 to partition should not have failed")
+	assert.Equal(t, 1, partition.nodes.GetNodeCount(), "node list not correct")
+
+	// get what was allocated
+	allocated := node1.GetAllAllocations()
+	assert.Equal(t, 1, len(allocated), "allocation not added correctly to node1")
+	assert.Assert(t, resources.Equals(node1.GetAllocatedResource(), appRes), "allocation not added correctly to node1")
+
+	node2 := newNodeMaxResource(nodeID2, newRes)
+	err = partition.AddNode(node2, nil)
+	assert.NilError(t, err, "test node add failed unexpected")
+	assert.Equal(t, 2, partition.nodes.GetNodeCount(), "node list not correct")
+	assert.Assert(t, resources.Equals(partition.GetQueue(defQueue).GetAllocatedResource(), appRes), "Queue allocated resource is not correct")
+
+	// add the app1 with 6 placeholder request
+	gangApp := newApplicationTGTagsWithPhTimeout(appID2, "default", defQueue, phRes, nil, 0)
+	err = partition.AddApplication(gangApp)
+	assert.NilError(t, err, "app1-1 should have been added to the partition")
+
+	for i := 1; i <= 6; i++ {
+		// add an ask for a placeholder and allocate
+		ask = newAllocationAskTG(phID+strconv.Itoa(i+1), appID2, taskGroup, res, true)
+		err = gangApp.AddAllocationAsk(ask)
+		assert.NilError(t, err, "failed to add placeholder ask ph-1 to app1")
+		// try to allocate a placeholder via normal allocate
+		ph := partition.tryAllocate()
+		if ph == nil {
+			t.Fatal("expected placeholder to be allocated")
+		}
+	}
+
+	// add an ask for a last placeholder and allocate
+	lastPh := phID + strconv.Itoa(7)
+	ask = newAllocationAskTG(lastPh, appID2, taskGroup, res, true)
+	err = gangApp.AddAllocationAsk(ask)
+	assert.NilError(t, err, "failed to add placeholder ask ph-1 to app1")
+
+	// try to allocate a last placeholder via normal allocate
+	partition.tryAllocate()
+
+	assertPlaceholderData(t, gangApp, 7, 0)
+
+	// Remove node
+	partition.removeNode(nodeID2)
+	assertPlaceholderData(t, gangApp, 7, 4)
+}
+
+// Test removal of placeholder has been accounted as timed out in app placeholder data
+// setup:
+// queue quota max size: 16GB / 16cpu
+// nodes: 2 * 8GB / 8 cpu
+// create an application with allocation: 4 GB / 4 cpu
+// create an gang application requesting: 7 * 2GB / 2cpu
+// Remove the node where placeholders are running
+//
+// ensure removed placeholders has been accounted under timed out in gang app placeholder data
+func TestPlaceholderDataWithRemoval(t *testing.T) {
+	setupUGM()
+	partition, err := newBasePartition()
+	assert.NilError(t, err, "partition create failed")
+
+	// add a new app1
+	app1, _ := newApplicationWithHandler(appID1, "default", defQueue)
+	err = partition.AddApplication(app1)
+	assert.NilError(t, err, "add application to partition should not have failed")
+
+	resMap := map[string]string{"mem": "2M", "vcore": "2"}
+	res, err := resources.NewResourceFromConf(resMap)
+	assert.NilError(t, err, "Unexpected error when creating resource from map")
+	appRes := res.Clone()
+	phRes := res.Clone()
+	newRes := res.Clone()
+	appRes.MultiplyTo(2)
+	newRes.MultiplyTo(4)
+	phRes.MultiplyTo(7)
+
+	// add a node with allocation: must have the correct app1 added already
+	ask := newAllocationAskAll("ask-1", appID1, taskGroup, appRes, 0, 1, false)
+	alloc := objects.NewAllocation(allocID, nodeID1, ask)
+	allocs := []*objects.Allocation{alloc}
+
+	node1 := newNodeMaxResource(nodeID1, newRes)
+	err = partition.AddNode(node1, allocs)
+	assert.NilError(t, err, "add node1 to partition should not have failed")
+	assert.Equal(t, 1, partition.nodes.GetNodeCount(), "node list not correct")
+
+	// get what was allocated
+	allocated := node1.GetAllAllocations()
+	assert.Equal(t, 1, len(allocated), "allocation not added correctly to node1")
+	assert.Assert(t, resources.Equals(node1.GetAllocatedResource(), appRes), "allocation not added correctly to node1")
+
+	node2 := newNodeMaxResource(nodeID2, newRes)
+	err = partition.AddNode(node2, nil)
+	assert.NilError(t, err, "test node add failed unexpected")
+	assert.Equal(t, 2, partition.nodes.GetNodeCount(), "node list not correct")
+	assert.Assert(t, resources.Equals(partition.GetQueue(defQueue).GetAllocatedResource(), appRes), "Queue allocated resource is not correct")
+
+	// add the app1 with 6 placeholder request
+	gangApp := newApplicationTGTagsWithPhTimeout(appID2, "default", defQueue, phRes, nil, 0)
+	err = partition.AddApplication(gangApp)
+	assert.NilError(t, err, "app1-1 should have been added to the partition")
+
+	var lastPhUUID string
+	for i := 1; i <= 6; i++ {
+		// add an ask for a placeholder and allocate
+		ask = newAllocationAskTG(phID+strconv.Itoa(i+1), appID2, taskGroup, res, true)
+		err = gangApp.AddAllocationAsk(ask)
+		assert.NilError(t, err, "failed to add placeholder ask ph-1 to app1")
+		// try to allocate a placeholder via normal allocate
+		ph := partition.tryAllocate()
+		if ph == nil {
+			t.Fatal("expected placeholder to be allocated")
+		}
+		lastPhUUID = ph.GetUUID()
+	}
+
+	// add an ask for a last placeholder and allocate
+	lastPh := phID + strconv.Itoa(7)
+	ask = newAllocationAskTG(lastPh, appID2, taskGroup, res, true)
+	err = gangApp.AddAllocationAsk(ask)
+	assert.NilError(t, err, "failed to add placeholder ask ph-1 to app1")
+
+	// try to allocate a last placeholder via normal allocate
+	partition.tryAllocate()
+	assertPlaceholderData(t, gangApp, 7, 0)
+
+	// release allocation: do what the context would do after the shim processing
+	release := &si.AllocationRelease{
+		PartitionName:   partition.Name,
+		ApplicationID:   appID2,
+		UUID:            lastPhUUID,
+		TerminationType: si.TerminationType_STOPPED_BY_RM,
+	}
+	releases, _ := partition.removeAllocation(release)
+	assert.Equal(t, 1, len(releases), "unexpected number of allocations released")
+	assertPlaceholderData(t, gangApp, 7, 1)
+}
+
+// check PlaceHolderData
+func assertPlaceholderData(t *testing.T, gangApp *objects.Application, count int64, timedout int64) {
+	assert.Equal(t, len(gangApp.GetAllPlaceholderData()), 1)
+	assert.Equal(t, gangApp.GetAllPlaceholderData()[0].TaskGroupName, taskGroup)
+	assert.Equal(t, gangApp.GetAllPlaceholderData()[0].Count, count)
+	assert.Equal(t, gangApp.GetAllPlaceholderData()[0].Replaced, int64(0))
+	assert.Equal(t, gangApp.GetAllPlaceholderData()[0].TimedOut, timedout)
+}
+
 // test with a replacement of a placeholder: placeholder on the removed node, real on the 2nd node
 func TestRemoveNodeWithReplacement(t *testing.T) {
+	setupUGM()
 	partition, err := newBasePartition()
 	assert.NilError(t, err, "partition create failed")
 
@@ -1465,6 +1778,66 @@ func TestRequiredNodeAllocation(t *testing.T) {
 	assertUserGroupResource(t, getTestUserGroup(), resources.Multiply(res, 2))
 }
 
+func TestPreemption(t *testing.T) {
+	setupUGM()
+	partition, _, app2, alloc1, alloc2 := setupPreemption(t)
+
+	res, err := resources.NewResourceFromConf(map[string]string{"vcore": "5"})
+	assert.NilError(t, err, "failed to create resource")
+
+	// ask 3
+	ask3 := newAllocationAskPreempt(allocID3, appID2, 1, res)
+	err = app2.AddAllocationAsk(ask3)
+	assert.NilError(t, err, "failed to add ask alloc-3 to app-2")
+
+	// delay so that preemption delay passes
+	time.Sleep(100 * time.Millisecond)
+
+	// third allocation should not succeed, as we are currently above capacity
+	alloc := partition.tryAllocate()
+	if alloc != nil {
+		t.Fatal("unexpected allocation")
+	}
+
+	// alloc-2 (as it is newer) should now be marked preempted
+	assert.Assert(t, !alloc1.IsPreempted(), "alloc-1 is preempted")
+	assert.Assert(t, alloc2.IsPreempted(), "alloc-2 is not preempted")
+
+	// allocation should still not do anything as we have not yet released the preempted allocation
+	alloc = partition.tryAllocate()
+	if alloc != nil {
+		t.Fatal("unexpected allocation")
+	}
+
+	// currently preempting resources in victim queue should be updated
+	preemptingRes := partition.GetQueue("root.parent.leaf1").GetPreemptingResource()
+	assert.Assert(t, resources.Equals(preemptingRes, res), "incorrect preempting resources")
+
+	// release alloc-2
+	partition.removeAllocation(&si.AllocationRelease{
+		PartitionName:   "default",
+		ApplicationID:   appID1,
+		UUID:            alloc2.GetUUID(),
+		TerminationType: si.TerminationType_STOPPED_BY_RM,
+		Message:         "Preempted",
+		AllocationKey:   allocID2,
+	})
+
+	// currently preempting resources in victim queue should be zero
+	preemptingRes = partition.GetQueue("root.parent.leaf1").GetPreemptingResource()
+	assert.Assert(t, resources.IsZero(preemptingRes), "incorrect preempting resources")
+
+	// allocation should now allocate
+	alloc = partition.tryAllocate()
+	if alloc == nil {
+		t.Fatal("missing allocation")
+	}
+	assert.Equal(t, 0, len(app2.GetReservations()), "ask should not be reserved")
+	assert.Equal(t, alloc.GetResult(), objects.Allocated, "result should be allocated")
+	assert.Equal(t, alloc.GetAllocationKey(), allocID3, "expected ask alloc-3 to be allocated")
+	assertUserGroupResource(t, getTestUserGroup(), resources.NewResourceFromMap(map[string]resources.Quantity{"vcore": 10000}))
+}
+
 // Preemption followed by a normal allocation
 func TestPreemptionForRequiredNodeNormalAlloc(t *testing.T) {
 	setupUGM()
@@ -1497,7 +1870,7 @@ func TestPreemptionForRequiredNodeReservedAlloc(t *testing.T) {
 	assertUserGroupResource(t, getTestUserGroup(), resources.NewResourceFromMap(map[string]resources.Quantity{"vcore": 8000}))
 }
 
-func TestMultiplePreemptionAttemptAvoided(t *testing.T) {
+func TestPreemptionForRequiredNodeMultipleAttemptsAvoided(t *testing.T) {
 	partition := createQueuesNodes(t)
 	if partition == nil {
 		t.Fatal("partition create failed")
@@ -1543,6 +1916,67 @@ func TestMultiplePreemptionAttemptAvoided(t *testing.T) {
 	assert.Equal(t, 1, eventCount)
 	assert.Equal(t, true, ask2.HasTriggeredPreemption())
 	assert.Equal(t, true, alloc.IsPreempted())
+}
+
+// setup the partition with existing allocations so we can test preemption
+func setupPreemption(t *testing.T) (*PartitionContext, *objects.Application, *objects.Application, *objects.Allocation, *objects.Allocation) {
+	partition := createPreemptionQueuesNodes(t)
+	if partition == nil {
+		t.Fatal("partition create failed")
+	}
+	if alloc := partition.tryAllocate(); alloc != nil {
+		t.Fatalf("empty cluster allocate returned allocation: %v", alloc.String())
+	}
+
+	app1, _ := newApplicationWithHandler(appID1, "default", "root.parent.leaf1")
+	res, err := resources.NewResourceFromConf(map[string]string{"vcore": "5"})
+	assert.NilError(t, err, "failed to create resource")
+
+	// add to the partition
+	err = partition.AddApplication(app1)
+	assert.NilError(t, err, "failed to add app-1 to partition")
+
+	// ask 1
+	ask := newAllocationAskPreempt(allocID, appID1, 2, res)
+	err = app1.AddAllocationAsk(ask)
+	assert.NilError(t, err, "failed to add ask alloc-1 to app-1")
+
+	// first allocation should be app-1 and alloc-1
+	alloc1 := partition.tryAllocate()
+	if alloc1 == nil {
+		t.Fatal("allocation did not return any allocation")
+	}
+	assert.Equal(t, alloc1.GetResult(), objects.Allocated, "result is not the expected allocated")
+	assert.Equal(t, alloc1.GetReleaseCount(), 0, "released allocations should have been 0")
+	assert.Equal(t, alloc1.GetApplicationID(), appID1, "expected application app-1 to be allocated")
+	assert.Equal(t, alloc1.GetAllocationKey(), allocID, "expected ask alloc-1 to be allocated")
+	assert.Equal(t, alloc1.GetNodeID(), nodeID1, "expected alloc-1 on node-1")
+	assertUserGroupResource(t, getTestUserGroup(), resources.NewResourceFromMap(map[string]resources.Quantity{"vcore": 5000}))
+
+	// ask 2
+	ask2 := newAllocationAskPreempt(allocID2, appID1, 1, res)
+	err = app1.AddAllocationAsk(ask2)
+	assert.NilError(t, err, "failed to add ask alloc-2 to app-1")
+
+	// second allocation should be app-1 and alloc-2
+	alloc2 := partition.tryAllocate()
+	if alloc2 == nil {
+		t.Fatal("allocation did not return any allocation")
+	}
+	assert.Equal(t, alloc2.GetResult(), objects.Allocated, "result is not the expected allocated")
+	assert.Equal(t, alloc2.GetReleaseCount(), 0, "released allocations should have been 0")
+	assert.Equal(t, alloc2.GetApplicationID(), appID1, "expected application app-1 to be allocated")
+	assert.Equal(t, alloc2.GetAllocationKey(), allocID2, "expected ask alloc-2 to be allocated")
+	assert.Equal(t, alloc2.GetNodeID(), nodeID2, "expected alloc-2 on node-2")
+	assertUserGroupResource(t, getTestUserGroup(), resources.NewResourceFromMap(map[string]resources.Quantity{"vcore": 10000}))
+
+	app2, _ := newApplicationWithHandler(appID2, "default", "root.parent.leaf2")
+
+	// add to the partition
+	err = partition.AddApplication(app2)
+	assert.NilError(t, err, "failed to add app-1 to partition")
+
+	return partition, app1, app2, alloc1, alloc2
 }
 
 // setup the partition in a state that we need for multiple tests
@@ -1956,7 +2390,6 @@ func TestUpdateRootQueue(t *testing.T) {
 		},
 		PlacementRules: nil,
 		Limits:         nil,
-		Preemption:     configs.PartitionPreemptionConfig{},
 		NodeSortPolicy: configs.NodeSortingPolicy{},
 	}
 
@@ -2871,7 +3304,6 @@ func TestUpdateNodeSortingPolicy(t *testing.T) {
 				},
 				PlacementRules: nil,
 				Limits:         nil,
-				Preemption:     configs.PartitionPreemptionConfig{},
 				NodeSortPolicy: configs.NodeSortingPolicy{Type: tt.input},
 			})
 
@@ -2915,7 +3347,6 @@ func TestGetNodeSortingPolicyWhenNewPartitionFromConfig(t *testing.T) {
 				},
 				PlacementRules: nil,
 				Limits:         nil,
-				Preemption:     configs.PartitionPreemptionConfig{},
 				NodeSortPolicy: configs.NodeSortingPolicy{
 					Type: tt.input,
 				},
