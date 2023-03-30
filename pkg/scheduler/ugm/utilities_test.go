@@ -42,13 +42,3 @@ func InternalGetMaxResource(usage *dao.ResourceUsageDAOInfo, resources map[strin
 	}
 	return resources
 }
-
-func internalGetMaxRunningApplications(usage *dao.ResourceUsageDAOInfo, resources map[string]uint64) map[string]uint64 {
-	resources[usage.QueuePath] = usage.MaxRunningApplications
-	if len(usage.Children) > 0 {
-		for _, resourceUsage := range usage.Children {
-			internalGetMaxRunningApplications(resourceUsage, resources)
-		}
-	}
-	return resources
-}

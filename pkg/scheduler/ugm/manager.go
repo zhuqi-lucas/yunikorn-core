@@ -35,16 +35,20 @@ var m *Manager
 // Manager implements tracker. A User Group Manager to track the usage for both user and groups.
 // Holds object of both user and group trackers
 type Manager struct {
-	userTrackers  map[string]*UserTracker
-	groupTrackers map[string]*GroupTracker
-	lock          sync.RWMutex
+	userTrackers       map[string]*UserTracker
+	groupTrackers      map[string]*GroupTracker
+	userLimitTrackers  map[string]*LimitTracker
+	groupLimitTrackers map[string]*LimitTracker
+	lock               sync.RWMutex
 }
 
 func newManager() *Manager {
 	manager := &Manager{
-		userTrackers:  make(map[string]*UserTracker),
-		groupTrackers: make(map[string]*GroupTracker),
-		lock:          sync.RWMutex{},
+		userTrackers:       make(map[string]*UserTracker),
+		groupTrackers:      make(map[string]*GroupTracker),
+		userLimitTrackers:  make(map[string]*LimitTracker),
+		groupLimitTrackers: make(map[string]*LimitTracker),
+		lock:               sync.RWMutex{},
 	}
 	return manager
 }
@@ -56,26 +60,16 @@ func GetUserManager() *Manager {
 	return m
 }
 
-func (m *Manager) InitForUserLimitTracker(user string) *UserTracker {
-	queueTracker := newRootQueueTracker()
-	userTracker := &UserTracker{
-		userName:         user,
-		appGroupTrackers: make(map[string]*GroupTracker),
-		queueTracker:     queueTracker,
-	}
-	m.userTrackers[user] = userTracker
-	return userTracker
+func (m *Manager) InitForUserLimitTracker(userName string) *LimitTracker {
+	limitTracker := newRootLimitTracker(User)
+	m.userLimitTrackers[userName] = limitTracker
+	return limitTracker
 }
 
-func (m *Manager) InitForGroupLimitTracker(group string) *GroupTracker {
-	queueTracker := newRootQueueTracker()
-	groupTracker := &GroupTracker{
-		groupName:    group,
-		applications: make(map[string]bool),
-		queueTracker: queueTracker,
-	}
-	m.groupTrackers[group] = groupTracker
-	return groupTracker
+func (m *Manager) InitForGroupLimitTracker(groupName string) *LimitTracker {
+	limitTracker := newRootLimitTracker(Group)
+	m.groupLimitTrackers[groupName] = limitTracker
+	return limitTracker
 }
 
 // IncreaseTrackedResource Increase the resource usage for the given user group and queue path combination.
@@ -248,6 +242,24 @@ func (m *Manager) GetUserTracker(user string) *UserTracker {
 	defer m.lock.RUnlock()
 	if m.userTrackers[user] != nil {
 		return m.userTrackers[user]
+	}
+	return nil
+}
+
+func (m *Manager) GetUserLimitTracker(user string) *LimitTracker {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+	if m.userLimitTrackers[user] != nil {
+		return m.userLimitTrackers[user]
+	}
+	return nil
+}
+
+func (m *Manager) GetGroupLimitTracker(user string) *LimitTracker {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+	if m.groupLimitTrackers[user] != nil {
+		return m.groupLimitTrackers[user]
 	}
 	return nil
 }

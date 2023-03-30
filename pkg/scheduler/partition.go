@@ -252,26 +252,26 @@ func (pc *PartitionContext) updateLimits(config []configs.QueueConfig, parentQue
 		queuePath := parentPath + conf.Name
 		for _, limit := range conf.Limits {
 			for _, user := range limit.Users {
-				if ugm.GetUserManager().GetUserTracker(user) == nil {
+				if ugm.GetUserManager().GetUserLimitTracker(user) == nil {
 					ugm.GetUserManager().InitForUserLimitTracker(user)
 				}
-				ugm.GetUserManager().GetUserTracker(user).SetMaxApplications(limit.MaxApplications, queuePath)
+				ugm.GetUserManager().GetUserLimitTracker(user).SetMaxApplications(limit.MaxApplications, queuePath, ugm.User)
 				max, err := resources.NewResourceFromConf(limit.MaxResources)
 				if err != nil {
 					return err
 				}
-				ugm.GetUserManager().GetUserTracker(user).SetMaxResources(max, queuePath)
+				ugm.GetUserManager().GetUserLimitTracker(user).SetMaxResources(max, queuePath, ugm.User)
 			}
 			for _, group := range limit.Groups {
-				if ugm.GetUserManager().GetGroupTracker(group) == nil {
-					ugm.GetUserManager().InitForGroupLimitTracker(group)
+				if ugm.GetUserManager().GetUserLimitTracker(group) == nil {
+					ugm.GetUserManager().InitForUserLimitTracker(group)
 				}
-				ugm.GetUserManager().GetGroupTracker(group).SetMaxApplications(limit.MaxApplications, queuePath)
+				ugm.GetUserManager().GetUserLimitTracker(group).SetMaxApplications(limit.MaxApplications, queuePath, ugm.Group)
 				max, err := resources.NewResourceFromConf(limit.MaxResources)
 				if err != nil {
 					return err
 				}
-				ugm.GetUserManager().GetGroupTracker(group).SetMaxResources(max, queuePath)
+				ugm.GetUserManager().GetUserLimitTracker(group).SetMaxResources(max, queuePath, ugm.Group)
 			}
 		}
 		if err := pc.updateLimits(conf.Queues, queuePath); err != nil {
