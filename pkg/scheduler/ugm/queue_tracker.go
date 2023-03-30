@@ -30,14 +30,6 @@ import (
 	"github.com/apache/yunikorn-core/pkg/webservice/dao"
 )
 
-type trackingType int
-
-const (
-	none trackingType = iota
-	user
-	group
-)
-
 type QueueTracker struct {
 	queueName           string
 	resourceUsage       *resources.Resource
@@ -160,47 +152,4 @@ func getChildQueuePath(queuePath string) (string, string) {
 	}
 
 	return childQueuePath, immediateChildQueueName
-}
-
-func (qt *QueueTracker) setMaxApplications(maxApps uint64, queuePath string) {
-	idx := strings.Index(queuePath, configs.DOT)
-	childQueuePath := ""
-	if idx != -1 {
-		childQueuePath = queuePath[idx+1:]
-	}
-	childIndex := strings.Index(childQueuePath, configs.DOT)
-	immediateChildQueueName := childQueuePath
-	if childIndex != -1 {
-		immediateChildQueueName = childQueuePath[:childIndex]
-	}
-
-	if childQueuePath != "" {
-		if qt.childQueueTrackers[immediateChildQueueName] == nil {
-			qt.childQueueTrackers[immediateChildQueueName] = newQueueTracker(immediateChildQueueName)
-		}
-		qt.childQueueTrackers[immediateChildQueueName].setMaxApplications(maxApps, childQueuePath)
-	} else {
-		qt.maxRunningApps = maxApps
-	}
-}
-
-func (qt *QueueTracker) setMaxResources(maxResource *resources.Resource, queuePath string) {
-	idx := strings.Index(queuePath, configs.DOT)
-	childQueuePath := ""
-	if idx != -1 {
-		childQueuePath = queuePath[idx+1:]
-	}
-	childIndex := strings.Index(childQueuePath, configs.DOT)
-	immediateChildQueueName := childQueuePath
-	if childIndex != -1 {
-		immediateChildQueueName = childQueuePath[:childIndex]
-	}
-	if childQueuePath != "" {
-		if qt.childQueueTrackers[immediateChildQueueName] == nil {
-			qt.childQueueTrackers[immediateChildQueueName] = newQueueTracker(immediateChildQueueName)
-		}
-		qt.childQueueTrackers[immediateChildQueueName].setMaxResources(maxResource, childQueuePath)
-	} else {
-		qt.maxResourceUsage = maxResource.Clone()
-	}
 }
