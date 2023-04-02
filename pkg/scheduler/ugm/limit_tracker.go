@@ -61,25 +61,28 @@ func newLimitTracker(queueName string, trackingType trackingType) *LimitTracker 
 }
 
 func (lt *LimitTracker) SetMaxApplications(maxApps uint64, queuePath string, trackingType trackingType) {
+	if len(lt.childLimitTrackers) == 0 {
+		lt.maxRunningApps = maxApps
+		return
+	}
 	childQueuePath, immediateChildQueueName := getChildQueuePath(queuePath)
 	if childQueuePath != "" {
 		if lt.childLimitTrackers[immediateChildQueueName] == nil {
 			lt.childLimitTrackers[immediateChildQueueName] = newLimitTracker(immediateChildQueueName, trackingType)
 		}
 		lt.childLimitTrackers[immediateChildQueueName].SetMaxApplications(maxApps, childQueuePath, trackingType)
-	} else {
-		lt.maxRunningApps = maxApps
 	}
 }
 
 func (lt *LimitTracker) SetMaxResources(maxResource *resources.Resource, queuePath string, trackingType trackingType) {
+	if len(lt.childLimitTrackers) == 0 {
+		lt.maxResourceUsage = maxResource.Clone()
+	}
 	childQueuePath, immediateChildQueueName := getChildQueuePath(queuePath)
 	if childQueuePath != "" {
 		if lt.childLimitTrackers[immediateChildQueueName] == nil {
 			lt.childLimitTrackers[immediateChildQueueName] = newLimitTracker(immediateChildQueueName, trackingType)
 		}
 		lt.childLimitTrackers[immediateChildQueueName].SetMaxResources(maxResource, childQueuePath, trackingType)
-	} else {
-		lt.maxResourceUsage = maxResource.Clone()
 	}
 }

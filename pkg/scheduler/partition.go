@@ -238,44 +238,78 @@ func (pc *PartitionContext) updateQueues(config []configs.QueueConfig, parent *o
 	return nil
 }
 
-func (pc *PartitionContext) updateLimitDetails(conf configs.PartitionConfig, parentQueuePath string) error {
+func (pc *PartitionContext) updateLimitDetails(conf configs.PartitionConfig, parentQueuePath string,
+	currentUserMaxApps map[string]uint64, currentUserMaxResources map[string]*resources.Resource,
+	currentGroupMaxApps map[string]uint64, currentGroupMaxResources map[string]*resources.Resource) error {
 	pc.Lock()
 	defer pc.Unlock()
 	queueConf := conf.Queues[0]
 	// update the rest of the queues recursively
-	return pc.updateLimits(queueConf.Queues, parentQueuePath)
+	return pc.updateLimits(queueConf.Queues, parentQueuePath, currentUserMaxApps,
+		currentUserMaxResources, currentGroupMaxApps, currentGroupMaxResources)
 }
 
-func (pc *PartitionContext) updateLimits(config []configs.QueueConfig, parentQueuePath string) error {
+func (pc *PartitionContext) updateLimits(config []configs.QueueConfig, parentQueuePath string,
+	currentUserMaxApps map[string]uint64, currentUserMaxResources map[string]*resources.Resource,
+	currentGroupMaxApps map[string]uint64, currentGroupMaxResources map[string]*resources.Resource) error {
 	parentPath := parentQueuePath + configs.DOT
 	for _, conf := range config {
 		queuePath := parentPath + conf.Name
 		for _, limit := range conf.Limits {
 			for _, user := range limit.Users {
+				if limit.MaxApplications != 0 && currentUserMaxApps[user] != 0 && currentUserMaxApps[user] < limit.MaxApplications {
+					return fmt.Errorf("parent queue %s user max apps should not less than the child queue max apps", queuePath)
+				}
+
+				max, err := resources.NewResourceFromConf(limit.MaxResources)
+				if err != nil {
+					return err
+				}
+				if !resources.IsZero(max) && !resources.IsZero(currentUserMaxResources[user]) && !resources.FitIn(currentUserMaxResources[user], max) {
+					return fmt.Errorf("parent queue %s user max resource should not less than the child queue max resource", queuePath)
+				}
+
 				if ugm.GetUserManager().GetUserLimitTracker(user) == nil {
 					ugm.GetUserManager().InitForUserLimitTracker(user)
 				}
 				ugm.GetUserManager().GetUserLimitTracker(user).SetMaxApplications(limit.MaxApplications, queuePath, ugm.User)
+				ugm.GetUserManager().GetUserLimitTracker(user).SetMaxResources(max, queuePath, ugm.User)
+
+				if len(conf.Queues) > 0 {
+					currentUserMaxApps[user] = limit.MaxApplications
+					currentUserMaxResources[user] = max
+				}
+			}
+			for _, group := range limit.Groups {
+				if limit.MaxApplications != 0 && currentGroupMaxApps[group] != 0 && currentGroupMaxApps[group] < limit.MaxApplications {
+					return fmt.Errorf("parent queue %s group max apps should not less than the child queue max apps", queuePath)
+				}
 				max, err := resources.NewResourceFromConf(limit.MaxResources)
 				if err != nil {
 					return err
 				}
-				ugm.GetUserManager().GetUserLimitTracker(user).SetMaxResources(max, queuePath, ugm.User)
-			}
-			for _, group := range limit.Groups {
+				if !resources.IsZero(max) && !resources.IsZero(currentGroupMaxResources[group]) && !resources.FitIn(currentGroupMaxResources[group], max) {
+					return fmt.Errorf("parent queue %s group max resource should not less than the child queue max resource", queuePath)
+				}
+
 				if ugm.GetUserManager().GetUserLimitTracker(group) == nil {
 					ugm.GetUserManager().InitForUserLimitTracker(group)
 				}
 				ugm.GetUserManager().GetUserLimitTracker(group).SetMaxApplications(limit.MaxApplications, queuePath, ugm.Group)
-				max, err := resources.NewResourceFromConf(limit.MaxResources)
-				if err != nil {
-					return err
-				}
 				ugm.GetUserManager().GetUserLimitTracker(group).SetMaxResources(max, queuePath, ugm.Group)
+
+				if len(conf.Queues) > 0 {
+					currentGroupMaxApps[group] = limit.MaxApplications
+					currentGroupMaxResources[group] = max
+				}
 			}
 		}
-		if err := pc.updateLimits(conf.Queues, queuePath); err != nil {
-			return err
+
+		if len(conf.Queues) > 0 {
+			if err := pc.updateLimits(conf.Queues, queuePath,
+				currentUserMaxApps, currentUserMaxResources, currentGroupMaxApps, currentGroupMaxResources); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

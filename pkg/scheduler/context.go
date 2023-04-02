@@ -443,7 +443,8 @@ func (cc *ClusterContext) updateLimitConfig(conf *configs.SchedulerConfig, rmID 
 			}
 			// checks passed perform the real update
 			log.Logger().Info("updating partitions limit config", zap.String("partitionName", partitionName))
-			err = part.updateLimitDetails(p, "root")
+			err = part.updateLimitDetails(p, "root", make(map[string]uint64), make(map[string]*resources.Resource),
+				make(map[string]uint64), make(map[string]*resources.Resource))
 			if err != nil {
 				return err
 			}

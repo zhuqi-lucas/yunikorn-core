@@ -30,6 +30,7 @@ func TestQTSetMaxApps(t *testing.T) {
 	limitTracker := newLimitTracker("root", User)
 	limitTracker.SetMaxApplications(100, queuePath1, User)
 	limitTracker.SetMaxApplications(1000, queuePath2, User)
+
 }
 
 func TestQTSetMaxResource(t *testing.T) {

@@ -1347,7 +1347,23 @@ func TestUpdateLimits(t *testing.T) {
 					},
 				},
 			},
-			Limits: nil,
+			Limits: []configs.Limit{
+				{
+					Limit: "parent queue limit",
+					Users: []string{
+						"user1",
+						"user2",
+					},
+					Groups: []string{
+						"group1",
+					},
+					MaxResources: map[string]string{
+						"memory": "5",
+						"vcores": "5",
+					},
+					MaxApplications: 100,
+				},
+			},
 		},
 	}
 
@@ -1358,7 +1374,7 @@ func TestUpdateLimits(t *testing.T) {
 	if root == nil {
 		t.Error("root queue not found in partition")
 	}
-	err = partition.updateLimits(conf, "root")
+	err = partition.updateLimits(conf, "root", map[string]uint64{}, map[string]*resources.Resource{}, map[string]uint64{}, map[string]*resources.Resource{})
 	assert.NilError(t, err, "queue update from config failed")
 
 	println(len(ugm.GetUserManager().GetUsersResources()))
