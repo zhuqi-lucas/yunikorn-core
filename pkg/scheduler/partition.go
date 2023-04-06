@@ -257,16 +257,16 @@ func (pc *PartitionContext) updateLimits(config []configs.QueueConfig, parentQue
 		queuePath := parentPath + conf.Name
 		for _, limit := range conf.Limits {
 			for _, user := range limit.Users {
-				if limit.MaxApplications != 0 && currentUserMaxApps[user] != 0 && currentUserMaxApps[user] < limit.MaxApplications {
-					return fmt.Errorf("parent queue %s user max apps should not less than the child queue max apps", queuePath)
+				if limit.MaxApplications != 0 && currentUserMaxApps[parentQueuePath+","+user] != 0 && currentUserMaxApps[parentQueuePath+","+user] < limit.MaxApplications {
+					return fmt.Errorf("parent queue %s user max apps should not less than the child queue max apps", parentQueuePath)
 				}
 
 				max, err := resources.NewResourceFromConf(limit.MaxResources)
 				if err != nil {
 					return err
 				}
-				if !resources.IsZero(max) && !resources.IsZero(currentUserMaxResources[user]) && !resources.FitIn(currentUserMaxResources[user], max) {
-					return fmt.Errorf("parent queue %s user max resource should not less than the child queue max resource", queuePath)
+				if !resources.IsZero(max) && !resources.IsZero(currentUserMaxResources[parentQueuePath+","+user]) && !resources.FitIn(currentUserMaxResources[parentQueuePath+","+user], max) {
+					return fmt.Errorf("parent queue %s user max resource should not less than the child queue max resource", parentQueuePath)
 				}
 
 				if ugm.GetUserManager().GetUserLimitTracker(user) == nil {
@@ -275,21 +275,22 @@ func (pc *PartitionContext) updateLimits(config []configs.QueueConfig, parentQue
 				ugm.GetUserManager().GetUserLimitTracker(user).SetMaxApplications(limit.MaxApplications, queuePath, ugm.User)
 				ugm.GetUserManager().GetUserLimitTracker(user).SetMaxResources(max, queuePath, ugm.User)
 
+				// If this is a parent queue
 				if len(conf.Queues) > 0 {
-					currentUserMaxApps[user] = limit.MaxApplications
-					currentUserMaxResources[user] = max
+					currentUserMaxApps[queuePath+","+user] = limit.MaxApplications
+					currentUserMaxResources[queuePath+","+user] = max
 				}
 			}
 			for _, group := range limit.Groups {
-				if limit.MaxApplications != 0 && currentGroupMaxApps[group] != 0 && currentGroupMaxApps[group] < limit.MaxApplications {
-					return fmt.Errorf("parent queue %s group max apps should not less than the child queue max apps", queuePath)
+				if limit.MaxApplications != 0 && currentGroupMaxApps[parentQueuePath+","+group] != 0 && currentGroupMaxApps[parentQueuePath+","+group] < limit.MaxApplications {
+					return fmt.Errorf("parent queue %s group max apps should not less than the child queue max apps", parentQueuePath)
 				}
 				max, err := resources.NewResourceFromConf(limit.MaxResources)
 				if err != nil {
 					return err
 				}
-				if !resources.IsZero(max) && !resources.IsZero(currentGroupMaxResources[group]) && !resources.FitIn(currentGroupMaxResources[group], max) {
-					return fmt.Errorf("parent queue %s group max resource should not less than the child queue max resource", queuePath)
+				if !resources.IsZero(max) && !resources.IsZero(currentGroupMaxResources[parentQueuePath+","+group]) && !resources.FitIn(currentGroupMaxResources[parentQueuePath+","+group], max) {
+					return fmt.Errorf("parent queue %s group max resource should not less than the child queue max resource", parentQueuePath)
 				}
 
 				if ugm.GetUserManager().GetUserLimitTracker(group) == nil {
@@ -298,9 +299,10 @@ func (pc *PartitionContext) updateLimits(config []configs.QueueConfig, parentQue
 				ugm.GetUserManager().GetUserLimitTracker(group).SetMaxApplications(limit.MaxApplications, queuePath, ugm.Group)
 				ugm.GetUserManager().GetUserLimitTracker(group).SetMaxResources(max, queuePath, ugm.Group)
 
+				// If this is a parent queue
 				if len(conf.Queues) > 0 {
-					currentGroupMaxApps[group] = limit.MaxApplications
-					currentGroupMaxResources[group] = max
+					currentGroupMaxApps[queuePath+","+group] = limit.MaxApplications
+					currentGroupMaxResources[queuePath+","+group] = max
 				}
 			}
 		}

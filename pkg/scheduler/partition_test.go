@@ -1277,14 +1277,44 @@ func TestUpdateLimits(t *testing.T) {
 			Queues: []configs.QueueConfig{
 				{
 					Name:   "limit1",
-					Parent: false,
-					Queues: nil,
+					Parent: true,
+					Queues: []configs.QueueConfig{
+						{
+							Name:      "leaf",
+							Parent:    false,
+							SubmitACL: "*",
+							Resources: configs.Resources{
+								Max: map[string]string{
+									"memory": "500",
+									"vcores": "500",
+								},
+							},
+							Limits: []configs.Limit{
+								{
+									Limit: "queue limit1.leaf",
+									Users: []string{
+										"user1",
+										"user2",
+									},
+									Groups: []string{
+										"group1",
+									},
+									MaxResources: map[string]string{
+										"memory": "5",
+										"vcores": "5",
+									},
+									MaxApplications: 5,
+								},
+							},
+						},
+					},
 					Resources: configs.Resources{
 						Max: map[string]string{
 							"memory": "100",
 							"vcores": "100",
 						},
 					},
+					MaxApplications: 100,
 					Limits: []configs.Limit{
 						{
 							Limit: "queue limit1",
@@ -1358,8 +1388,8 @@ func TestUpdateLimits(t *testing.T) {
 						"group1",
 					},
 					MaxResources: map[string]string{
-						"memory": "5",
-						"vcores": "5",
+						"memory": "500",
+						"vcores": "500",
 					},
 					MaxApplications: 100,
 				},
