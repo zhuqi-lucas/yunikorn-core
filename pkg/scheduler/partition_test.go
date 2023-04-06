@@ -1300,10 +1300,10 @@ func TestUpdateLimits(t *testing.T) {
 										"group1",
 									},
 									MaxResources: map[string]string{
-										"memory": "5",
-										"vcores": "5",
+										"memory": "50",
+										"vcores": "50",
 									},
-									MaxApplications: 5,
+									MaxApplications: 500,
 								},
 							},
 						},
@@ -1316,21 +1316,21 @@ func TestUpdateLimits(t *testing.T) {
 					},
 					MaxApplications: 100,
 					Limits: []configs.Limit{
-						{
-							Limit: "queue limit1",
-							Users: []string{
-								"user1",
-								"user2",
-							},
-							Groups: []string{
-								"group1",
-							},
-							MaxResources: map[string]string{
-								"memory": "10",
-								"vcores": "10",
-							},
-							MaxApplications: 10,
-						},
+						//{
+						//	Limit: "queue limit1",
+						//	Users: []string{
+						//		"user1",
+						//		"user2",
+						//	},
+						//	Groups: []string{
+						//		"group1",
+						//	},
+						//	MaxResources: map[string]string{
+						//		"memory": "10",
+						//		"vcores": "10",
+						//	},
+						//	MaxApplications: 10,
+						//},
 						{
 							Limit: "queue limit2",
 							Users: []string{
