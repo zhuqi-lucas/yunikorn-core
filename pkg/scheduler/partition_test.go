@@ -1268,7 +1268,25 @@ func InternalGetMaxRunningApplications(usage *dao.ResourceUsageDAOInfo, resource
 	return resources
 }
 
-func TestUpdateLimits(t *testing.T) {
+func TestUpdateLimitsConfigCheck(t *testing.T) {
+	// Queue setup:
+	// root.parent.limit1
+	// root.parent.limit1.leaf
+	// root.parent.limit2
+
+	// The same level queue quota check already checked in YUNIKORN-1606
+	// So here we only need to check across queue level for quota.
+
+	partition, err := newBasePartition()
+	assert.NilError(t, err, "partition create failed")
+
+	// There is a queue setup as the config must be valid when we run
+	root := partition.GetQueue("root")
+	if root == nil {
+		t.Error("root queue not found in partition")
+	}
+
+	// case1: all queues are setting good, will success
 	conf := []configs.QueueConfig{
 		{
 			Name:      "parent",
@@ -1303,7 +1321,7 @@ func TestUpdateLimits(t *testing.T) {
 										"memory": "50",
 										"vcores": "50",
 									},
-									MaxApplications: 500,
+									MaxApplications: 5,
 								},
 							},
 						},
@@ -1316,21 +1334,21 @@ func TestUpdateLimits(t *testing.T) {
 					},
 					MaxApplications: 100,
 					Limits: []configs.Limit{
-						//{
-						//	Limit: "queue limit1",
-						//	Users: []string{
-						//		"user1",
-						//		"user2",
-						//	},
-						//	Groups: []string{
-						//		"group1",
-						//	},
-						//	MaxResources: map[string]string{
-						//		"memory": "10",
-						//		"vcores": "10",
-						//	},
-						//	MaxApplications: 10,
-						//},
+						{
+							Limit: "queue limit1",
+							Users: []string{
+								"user1",
+								"user2",
+							},
+							Groups: []string{
+								"group1",
+							},
+							MaxResources: map[string]string{
+								"memory": "60",
+								"vcores": "60",
+							},
+							MaxApplications: 10,
+						},
 						{
 							Limit: "queue limit2",
 							Users: []string{
@@ -1397,15 +1415,290 @@ func TestUpdateLimits(t *testing.T) {
 		},
 	}
 
-	partition, err := newBasePartition()
-	assert.NilError(t, err, "partition create failed")
-	// There is a queue setup as the config must be valid when we run
-	root := partition.GetQueue("root")
-	if root == nil {
-		t.Error("root queue not found in partition")
-	}
-	err = partition.updateLimits(conf, "root", map[string]uint64{}, map[string]*resources.Resource{}, map[string]uint64{}, map[string]*resources.Resource{})
+	currentUserMaxApps := map[string]uint64{}
+	currentUserMaxResources := map[string]*resources.Resource{}
+	currentGroupMaxApps := map[string]uint64{}
+	currentGroupMaxResources := map[string]*resources.Resource{}
+
+	err = partition.updateLimits(conf, "root", currentUserMaxApps, currentUserMaxResources, currentGroupMaxApps, currentGroupMaxResources)
 	assert.NilError(t, err, "queue update from config failed")
+	CleanUpCurrentResourceMap(currentGroupMaxApps, currentUserMaxResources, currentGroupMaxApps, currentGroupMaxResources)
+
+	// case2: will fail if limit quotas are larger than parent's limit quotas
+	conf = []configs.QueueConfig{
+		{
+			Name:      "parent",
+			Parent:    true,
+			SubmitACL: "*",
+			Queues: []configs.QueueConfig{
+				{
+					Name:   "limit1",
+					Parent: true,
+					Queues: []configs.QueueConfig{
+						{
+							Name:      "leaf",
+							Parent:    false,
+							SubmitACL: "*",
+							Resources: configs.Resources{
+								Max: map[string]string{
+									"memory": "500",
+									"vcores": "500",
+								},
+							},
+							Limits: []configs.Limit{
+								{
+									Limit: "queue limit1.leaf",
+									Users: []string{
+										"user1",
+										"user2",
+									},
+									Groups: []string{
+										"group1",
+									},
+									MaxResources: map[string]string{
+										"memory": "50",
+										"vcores": "50",
+									},
+									MaxApplications: 500,
+								},
+							},
+						},
+					},
+					Resources: configs.Resources{
+						Max: map[string]string{
+							"memory": "100",
+							"vcores": "100",
+						},
+					},
+					MaxApplications: 100,
+					Limits: []configs.Limit{
+						{
+							Limit: "queue limit1",
+							Users: []string{
+								"user1",
+								"user2",
+							},
+							Groups: []string{
+								"group1",
+							},
+							MaxResources: map[string]string{
+								"memory": "60",
+								"vcores": "60",
+							},
+							MaxApplications: 10,
+						},
+						{
+							Limit: "queue limit2",
+							Users: []string{
+								"user5",
+							},
+							Groups: []string{
+								"group3",
+								"group4",
+							},
+							MaxResources: map[string]string{
+								"memory": "10",
+								"vcores": "10",
+							},
+							MaxApplications: 10,
+						},
+					},
+				},
+				{
+					Name:   "limit2",
+					Parent: false,
+					Queues: nil,
+					Resources: configs.Resources{
+						Max: map[string]string{
+							"memory": "200",
+							"vcores": "200",
+						},
+					},
+					Limits: []configs.Limit{
+						{
+							Limit: "queue limit3",
+							Users: []string{
+								"user1",
+								"user2",
+							},
+							Groups: []string{
+								"group1",
+							},
+							MaxResources: map[string]string{
+								"memory": "30",
+								"vcores": "30",
+							},
+							MaxApplications: 50,
+						},
+					},
+				},
+			},
+			Limits: []configs.Limit{
+				{
+					Limit: "parent queue limit",
+					Users: []string{
+						"user1",
+						"user2",
+					},
+					Groups: []string{
+						"group1",
+					},
+					MaxResources: map[string]string{
+						"memory": "500",
+						"vcores": "500",
+					},
+					MaxApplications: 100,
+				},
+			},
+		},
+	}
+
+	// Make sure the check will fail due to: root.parent.limit1 user max apps should not less than the child queue root.parent.limit1.leaf max apps
+	currentUserMaxApps = map[string]uint64{}
+	currentUserMaxResources = map[string]*resources.Resource{}
+	currentGroupMaxApps = map[string]uint64{}
+	currentGroupMaxResources = map[string]*resources.Resource{}
+
+	err = partition.updateLimits(conf, "root", currentUserMaxApps, currentUserMaxResources, currentGroupMaxApps, currentGroupMaxResources)
+	CleanUpCurrentResourceMap(currentGroupMaxApps, currentUserMaxResources, currentGroupMaxApps, currentGroupMaxResources)
+	assert.ErrorContains(t, err, "parent queue root.parent.limit1 user max apps should not less than the child queue root.parent.limit1.leaf max apps")
+
+	// case3: will fail if limit quotas are larger than hierarchical limit quotas(Here is the case parent settings are missing)
+	conf = []configs.QueueConfig{
+		{
+			Name:      "parent",
+			Parent:    true,
+			SubmitACL: "*",
+			Queues: []configs.QueueConfig{
+				{
+					Name:   "limit1",
+					Parent: true,
+					Queues: []configs.QueueConfig{
+						{
+							Name:      "leaf",
+							Parent:    false,
+							SubmitACL: "*",
+							Resources: configs.Resources{
+								Max: map[string]string{
+									"memory": "500",
+									"vcores": "500",
+								},
+							},
+							Limits: []configs.Limit{
+								{
+									Limit: "queue limit1.leaf",
+									Users: []string{
+										"user1",
+										"user2",
+									},
+									Groups: []string{
+										"group1",
+									},
+									MaxResources: map[string]string{
+										"memory": "500",
+										"vcores": "500",
+									},
+									MaxApplications: 5,
+								},
+							},
+						},
+					},
+					Resources: configs.Resources{
+						Max: map[string]string{
+							"memory": "100",
+							"vcores": "100",
+						},
+					},
+					MaxApplications: 100,
+					Limits: []configs.Limit{
+						//{
+						//	Limit: "queue limit1",
+						//	Users: []string{
+						//		"user1",
+						//		"user2",
+						//	},
+						//	Groups: []string{
+						//		"group1",
+						//	},
+						//	MaxResources: map[string]string{
+						//		"memory": "60",
+						//		"vcores": "60",
+						//	},
+						//	MaxApplications: 10,
+						//},
+						{
+							Limit: "queue limit2",
+							Users: []string{
+								"user5",
+							},
+							Groups: []string{
+								"group3",
+								"group4",
+							},
+							MaxResources: map[string]string{
+								"memory": "10",
+								"vcores": "10",
+							},
+							MaxApplications: 10,
+						},
+					},
+				},
+				{
+					Name:   "limit2",
+					Parent: false,
+					Queues: nil,
+					Resources: configs.Resources{
+						Max: map[string]string{
+							"memory": "200",
+							"vcores": "200",
+						},
+					},
+					Limits: []configs.Limit{
+						{
+							Limit: "queue limit3",
+							Users: []string{
+								"user1",
+								"user2",
+							},
+							Groups: []string{
+								"group1",
+							},
+							MaxResources: map[string]string{
+								"memory": "30",
+								"vcores": "30",
+							},
+							MaxApplications: 50,
+						},
+					},
+				},
+			},
+			Limits: []configs.Limit{
+				{
+					Limit: "parent queue limit",
+					Users: []string{
+						"user1",
+						"user2",
+					},
+					Groups: []string{
+						"group1",
+					},
+					MaxResources: map[string]string{
+						"memory": "300",
+						"vcores": "300",
+					},
+					MaxApplications: 100,
+				},
+			},
+		},
+	}
+	currentUserMaxApps = map[string]uint64{}
+	currentUserMaxResources = map[string]*resources.Resource{}
+	currentGroupMaxApps = map[string]uint64{}
+	currentGroupMaxResources = map[string]*resources.Resource{}
+
+	err = partition.updateLimits(conf, "root", currentUserMaxApps, currentUserMaxResources, currentGroupMaxApps, currentGroupMaxResources)
+	CleanUpCurrentResourceMap(currentGroupMaxApps, currentUserMaxResources, currentGroupMaxApps, currentGroupMaxResources)
+	assert.ErrorContains(t, err, "parent queue root.parent.limit1 user max resource should not less than the child queue root.parent.limit1.leaf max resource")
 
 	println(len(ugm.GetUserManager().GetUsersResources()))
 	userTrackers := ugm.GetUserManager().GetUsersResources()

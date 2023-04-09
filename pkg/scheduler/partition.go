@@ -277,7 +277,7 @@ func hierarchicalCheckMaxResourcesFail(limitMaxResources *resources.Resource, us
 			return true
 		}
 
-		idx := strings.Index(parentQueuePath, configs.DOT)
+		idx := strings.LastIndex(parentQueuePath, configs.DOT)
 		if idx != -1 {
 			parentQueuePath = parentQueuePath[:idx]
 		} else {
@@ -285,6 +285,24 @@ func hierarchicalCheckMaxResourcesFail(limitMaxResources *resources.Resource, us
 		}
 	}
 	return false
+}
+
+func CleanUpCurrentResourceMap(currentUserMaxApps map[string]uint64, currentUserMaxResources map[string]*resources.Resource,
+	currentGroupMaxApps map[string]uint64, currentGroupMaxResources map[string]*resources.Resource) {
+	for k, _ := range currentUserMaxResources {
+		delete(currentUserMaxResources, k)
+	}
+
+	for k, _ := range currentUserMaxApps {
+		delete(currentUserMaxApps, k)
+	}
+
+	for k, _ := range currentGroupMaxResources {
+		delete(currentGroupMaxResources, k)
+	}
+	for k, _ := range currentGroupMaxApps {
+		delete(currentGroupMaxApps, k)
+	}
 }
 
 func (pc *PartitionContext) updateLimits(config []configs.QueueConfig, parentQueuePath string,
@@ -296,7 +314,7 @@ func (pc *PartitionContext) updateLimits(config []configs.QueueConfig, parentQue
 		for _, limit := range conf.Limits {
 			for _, user := range limit.Users {
 				if hierarchicalCheckMaxAppsFail(limit.MaxApplications, user, parentQueuePath, currentUserMaxApps) {
-					return fmt.Errorf("parent queue %s user max apps should not less than the child queue max apps", parentQueuePath)
+					return fmt.Errorf("parent queue %s user max apps should not less than the child queue %s max apps", parentQueuePath, queuePath)
 				}
 
 				max, err := resources.NewResourceFromConf(limit.MaxResources)
@@ -304,7 +322,7 @@ func (pc *PartitionContext) updateLimits(config []configs.QueueConfig, parentQue
 					return err
 				}
 				if hierarchicalCheckMaxResourcesFail(max, user, parentQueuePath, currentUserMaxResources) {
-					return fmt.Errorf("parent queue %s user max resource should not less than the child queue max resource", parentQueuePath)
+					return fmt.Errorf("parent queue %s user max resource should not less than the child queue %s max resource", parentQueuePath, queuePath)
 				}
 
 				if ugm.GetUserManager().GetUserLimitTracker(user) == nil {
@@ -321,14 +339,14 @@ func (pc *PartitionContext) updateLimits(config []configs.QueueConfig, parentQue
 			}
 			for _, group := range limit.Groups {
 				if hierarchicalCheckMaxAppsFail(limit.MaxApplications, group, parentQueuePath, currentGroupMaxApps) {
-					return fmt.Errorf("parent queue %s group max apps should not less than the child queue max apps", parentQueuePath)
+					return fmt.Errorf("parent queue %s group max apps should not less than the child queue %s max apps", parentQueuePath, queuePath)
 				}
 				max, err := resources.NewResourceFromConf(limit.MaxResources)
 				if err != nil {
 					return err
 				}
 				if hierarchicalCheckMaxResourcesFail(max, group, parentQueuePath, currentGroupMaxResources) {
-					return fmt.Errorf("parent queue %s group max resource should not less than the child queue max resource", parentQueuePath)
+					return fmt.Errorf("parent queue %s group max resource should not less than the child queue %s max resource", parentQueuePath, queuePath)
 				}
 
 				if ugm.GetUserManager().GetUserLimitTracker(group) == nil {
